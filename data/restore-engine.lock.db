@@ -1,0 +1,6 @@
+#FileLock
+#Wed Jul 08 22:34:52 EEST 2026
+hostName=fedora
+id=19f4339d6d0803cfb2593ac84a381fade7c86c8600e
+method=file
+server=192.168.1.6\:44051
