@@ -8,12 +8,17 @@ import org.springframework.stereotype.Component;
 @Component
 public class BinaryReferenceExtractorResolver {
 
-    private final Map<String, BinaryReferenceExtractor<?>> extractorsByType = new LinkedHashMap<>();
+    private final Map<String, BinaryReferenceExtractor<?>> extractorsByType;
 
     public BinaryReferenceExtractorResolver(List<BinaryReferenceExtractor<?>> extractors) {
+        Map<String, BinaryReferenceExtractor<?>> registry = new LinkedHashMap<>();
         for (BinaryReferenceExtractor<?> extractor : extractors) {
-            extractorsByType.put(extractor.messageType(), extractor);
+            BinaryReferenceExtractor<?> previous = registry.put(extractor.messageType(), extractor);
+            if (previous != null) {
+                throw new IllegalArgumentException("Duplicate binary reference extractor configured for message type: " + extractor.messageType());
+            }
         }
+        this.extractorsByType = Map.copyOf(registry);
     }
 
     public BinaryReferenceExtractor<?> resolve(String messageType) {

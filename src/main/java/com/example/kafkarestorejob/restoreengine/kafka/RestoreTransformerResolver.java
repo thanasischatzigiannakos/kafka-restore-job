@@ -11,10 +11,14 @@ public class RestoreTransformerResolver {
     private final Map<String, RestoreTransformer> transformersByType;
 
     public RestoreTransformerResolver(List<RestoreTransformer> transformers) {
-        this.transformersByType = new LinkedHashMap<>();
+        Map<String, RestoreTransformer> registry = new LinkedHashMap<>();
         for (RestoreTransformer transformer : transformers) {
-            transformersByType.put(transformer.messageType(), transformer);
+            RestoreTransformer previous = registry.put(transformer.messageType(), transformer);
+            if (previous != null) {
+                throw new IllegalArgumentException("Duplicate transformer configured for message type: " + transformer.messageType());
+            }
         }
+        this.transformersByType = Map.copyOf(registry);
     }
 
     public RestoreTransformer resolve(String messageType) {

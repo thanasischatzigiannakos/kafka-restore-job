@@ -1,6 +1,5 @@
 package com.example.kafkarestorejob.restoreengine.config;
 
-import java.util.concurrent.Executor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.annotation.EnableAsync;
@@ -11,7 +10,7 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 public class AsyncConfiguration {
 
     @Bean(name = "restoreJobExecutor")
-    public Executor restoreJobExecutor() {
+    public ThreadPoolTaskExecutor restoreJobExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
         executor.setThreadNamePrefix("restore-job-");
         executor.setCorePoolSize(2);

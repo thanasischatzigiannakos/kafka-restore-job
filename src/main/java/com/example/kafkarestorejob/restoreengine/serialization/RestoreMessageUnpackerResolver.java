@@ -8,12 +8,17 @@ import org.springframework.stereotype.Component;
 @Component
 public class RestoreMessageUnpackerResolver {
 
-    private final Map<String, RestoreMessageUnpacker<?>> unpackersByType = new LinkedHashMap<>();
+    private final Map<String, RestoreMessageUnpacker<?>> unpackersByType;
 
     public RestoreMessageUnpackerResolver(List<RestoreMessageUnpacker<?>> unpackers) {
+        Map<String, RestoreMessageUnpacker<?>> registry = new LinkedHashMap<>();
         for (RestoreMessageUnpacker<?> unpacker : unpackers) {
-            unpackersByType.put(unpacker.messageType(), unpacker);
+            RestoreMessageUnpacker<?> previous = registry.put(unpacker.messageType(), unpacker);
+            if (previous != null) {
+                throw new IllegalArgumentException("Duplicate unpacker configured for message type: " + unpacker.messageType());
+            }
         }
+        this.unpackersByType = Map.copyOf(registry);
     }
 
     public Object unpack(String messageType, byte[] payload) {
