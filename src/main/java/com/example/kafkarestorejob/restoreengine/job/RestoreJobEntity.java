@@ -34,6 +34,8 @@ public class RestoreJobEntity {
 
     private Instant cancellationRequestedAt;
 
+    private Instant restoreFromTimestamp;
+
     @Column(nullable = false)
     private Instant updatedAt;
 
@@ -103,6 +105,14 @@ public class RestoreJobEntity {
 
     public void setCancellationRequestedAt(Instant cancellationRequestedAt) {
         this.cancellationRequestedAt = cancellationRequestedAt;
+    }
+
+    public Instant getRestoreFromTimestamp() {
+        return restoreFromTimestamp;
+    }
+
+    public void setRestoreFromTimestamp(Instant restoreFromTimestamp) {
+        this.restoreFromTimestamp = restoreFromTimestamp;
     }
 
     public Instant getUpdatedAt() {

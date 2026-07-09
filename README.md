@@ -82,6 +82,7 @@ Job states:
 - `PENDING`
 - `RUNNING`
 - `CANCELLATION_REQUESTED`
+- `FINALIZING`
 - `CANCELLED`
 - `COMPLETED`
 - `FAILED`
@@ -92,6 +93,7 @@ Stored metadata includes:
 - restore type
 - status
 - requested timestamp
+- restore-from timestamp
 - started timestamp
 - completed timestamp
 - cancellation requested timestamp
@@ -137,7 +139,18 @@ If cancellation is requested after a batch has already committed:
 
 This preserves the exactly-once contract because offsets are still committed only through the Kafka transaction.
 
-Only one active job per restore type is allowed. This avoids concurrent use of the same stable `group.id` and `transactional.id`.
+Only one active job is allowed at a time. Active job state and cancellation decisions are kept in memory; the database is an audit/logging resource for job lifecycle events and metadata.
+
+The restore request accepts an optional `restoreFromTimestamp` ISO-8601 timestamp:
+
+```json
+{
+  "restoreType": "application",
+  "restoreFromTimestamp": "2026-07-09T10:00:00Z"
+}
+```
+
+When present, Kafka `offsetsForTimes` is used to find the starting offset for each source partition. If Kafka has no offset for the timestamp on a partition, that partition is restored from the beginning. If no timestamp is provided, restoration also starts from the beginning.
 
 ## Typed Message Unpacking
 

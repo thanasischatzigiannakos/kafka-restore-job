@@ -6,11 +6,9 @@ import com.example.kafkarestorejob.restoreengine.kafka.RestoreReplicationLoop;
 import com.example.kafkarestorejob.restoreengine.zookeeper.ZooKeeperCommandProcessorStateRepository;
 import jakarta.persistence.EntityNotFoundException;
 import java.time.Instant;
-import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.RejectedExecutionException;
@@ -23,9 +21,6 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 public class RestoreJobCoordinator {
 
-    private static final Set<RestoreJobStatus> ACTIVE_STATUSES =
-            Set.copyOf(EnumSet.of(RestoreJobStatus.PENDING, RestoreJobStatus.RUNNING, RestoreJobStatus.CANCELLATION_REQUESTED));
-
     private final RestoreJobRepository restoreJobRepository;
     private final RestoreReplicationLoop restoreReplicationLoop;
     private final ZooKeeperCommandProcessorStateRepository stateRepository;
@@ -33,7 +28,7 @@ public class RestoreJobCoordinator {
     private final TransactionTemplate transactionTemplate;
     private final ThreadPoolTaskExecutor restoreJobExecutor;
     private final Map<UUID, RunningRestoreJob> runningJobs = new ConcurrentHashMap<>();
-    private final Map<String, Object> restoreTypeLocks = new ConcurrentHashMap<>();
+    private final Object activeJobLock = new Object();
 
     public RestoreJobCoordinator(
             RestoreJobRepository restoreJobRepository,
@@ -51,83 +46,90 @@ public class RestoreJobCoordinator {
         this.restoreJobExecutor = restoreJobExecutor;
     }
 
-    public RestoreJobResponse startJob(String restoreType) {
+    public RestoreJobStartResponse startJob(String restoreType, Instant restoreFromTimestamp) {
         engineKafkaProperties.requirePipeline(restoreType);
-        Object restoreTypeLock = restoreTypeLocks.computeIfAbsent(restoreType, ignored -> new Object());
-        synchronized (restoreTypeLock) {
+        synchronized (activeJobLock) {
+            if (!runningJobs.isEmpty()) {
+                throw new IllegalStateException("Another restore job is already active");
+            }
             RestoreJobEntity saved = Objects.requireNonNull(
-                    transactionTemplate.execute(status -> createPendingJob(restoreType)),
+                    transactionTemplate.execute(status -> createPendingJob(restoreType, restoreFromTimestamp)),
                     "Created restore job must not be null"
             );
             RunningRestoreJob runningRestoreJob = new RunningRestoreJob();
             runningJobs.put(saved.getId(), runningRestoreJob);
             try {
-                restoreJobExecutor.submit(() -> executeJob(saved.getId(), restoreType, runningRestoreJob));
+                restoreJobExecutor.submit(() -> executeJob(saved.getId(), restoreType, restoreFromTimestamp, runningRestoreJob));
             } catch (RejectedExecutionException exception) {
                 runningJobs.remove(saved.getId());
                 markFailed(saved.getId(), exception);
                 throw exception;
             }
-            return RestoreJobResponse.fromEntity(saved);
+            return new RestoreJobStartResponse(saved.getId());
         }
     }
 
     @Transactional(readOnly = true)
     public RestoreJobResponse getJob(UUID jobId) {
-        return RestoreJobResponse.fromEntity(findJob(jobId));
+        RestoreJobEntity entity = findJob(jobId);
+        return RestoreJobResponse.fromEntity(entity, runningJobs.get(jobId));
     }
 
     @Transactional(readOnly = true)
     public List<RestoreJobResponse> listJobs() {
         return restoreJobRepository.findTop50ByOrderByRequestedAtDesc().stream()
-                .map(RestoreJobResponse::fromEntity)
+                .map(entity -> RestoreJobResponse.fromEntity(entity, runningJobs.get(entity.getId())))
                 .toList();
     }
 
     @Transactional
     public RestoreJobResponse requestCancellation(UUID jobId) {
-        RestoreJobEntity entity = findJob(jobId);
-        if (entity.getStatus() == RestoreJobStatus.COMPLETED
-                || entity.getStatus() == RestoreJobStatus.CANCELLED
-                || entity.getStatus() == RestoreJobStatus.FAILED) {
-            return RestoreJobResponse.fromEntity(entity);
-        }
-
-        entity.setStatus(RestoreJobStatus.CANCELLATION_REQUESTED);
-        entity.setCancellationRequestedAt(Instant.now());
         RunningRestoreJob runningRestoreJob = runningJobs.get(jobId);
-        if (runningRestoreJob != null) {
-            runningRestoreJob.requestCancellation();
+        if (runningRestoreJob == null) {
+            return RestoreJobResponse.fromEntity(findJob(jobId));
         }
 
+        RestoreJobEntity entity = findJob(jobId);
+        if (!runningRestoreJob.requestCancellation()) {
+            return RestoreJobResponse.fromEntity(entity, runningRestoreJob);
+        }
+        entity.setStatus(runningRestoreJob.getStatus());
+        entity.setCancellationRequestedAt(runningRestoreJob.getCancellationRequestedAt());
         return RestoreJobResponse.fromEntity(restoreJobRepository.save(entity));
     }
 
-    private void executeJob(UUID jobId, String restoreType, RunningRestoreJob runningRestoreJob) {
+    private void executeJob(UUID jobId, String restoreType, Instant restoreFromTimestamp, RunningRestoreJob runningRestoreJob) {
+        runningRestoreJob.setStatus(RestoreJobStatus.RUNNING);
         markRunning(jobId, restoreType);
         try {
-            RestoreExecutionResult result = restoreReplicationLoop.restore(restoreType, runningRestoreJob::isCancellationRequested);
-            markCompleted(jobId, result);
+            RestoreExecutionResult result = restoreReplicationLoop.restore(
+                    restoreType,
+                    restoreFromTimestamp,
+                    runningRestoreJob::isCancellationRequested
+            );
+            runningRestoreJob.setStatus(RestoreJobStatus.FINALIZING);
+            markFinalizing(jobId);
             stateRepository.markRestoreCompleted(result);
+            runningRestoreJob.setStatus(RestoreJobStatus.COMPLETED);
+            markCompleted(jobId, result);
         } catch (RestoreJobCancellationException exception) {
+            runningRestoreJob.setStatus(RestoreJobStatus.CANCELLED);
             markCancelled(jobId, exception.getMessage());
         } catch (RuntimeException exception) {
+            runningRestoreJob.setStatus(RestoreJobStatus.FAILED);
             markFailed(jobId, exception);
         } finally {
             runningJobs.remove(jobId);
         }
     }
 
-    private RestoreJobEntity createPendingJob(String restoreType) {
-        if (restoreJobRepository.existsByRestoreTypeAndStatusIn(restoreType, ACTIVE_STATUSES)) {
-            throw new IllegalStateException("Another restore job is already active for restore type: " + restoreType);
-        }
-
+    private RestoreJobEntity createPendingJob(String restoreType, Instant restoreFromTimestamp) {
         RestoreJobEntity entity = new RestoreJobEntity();
         entity.setId(UUID.randomUUID());
         entity.setRestoreType(restoreType);
         entity.setStatus(RestoreJobStatus.PENDING);
         entity.setRequestedAt(Instant.now());
+        entity.setRestoreFromTimestamp(restoreFromTimestamp);
         return restoreJobRepository.save(entity);
     }
 
@@ -143,6 +145,16 @@ public class RestoreJobCoordinator {
         entity.setSourceTopic(pipeline.getSourceTopic());
         entity.setTargetTopic(pipeline.getTargetTopic());
         entity.setMessageType(pipeline.getMessageType());
+        restoreJobRepository.save(entity);
+    }
+
+    private void markFinalizing(UUID jobId) {
+        transactionTemplate.executeWithoutResult(status -> updateJobAsFinalizing(jobId));
+    }
+
+    private void updateJobAsFinalizing(UUID jobId) {
+        RestoreJobEntity entity = findJob(jobId);
+        entity.setStatus(RestoreJobStatus.FINALIZING);
         restoreJobRepository.save(entity);
     }
 

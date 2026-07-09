@@ -11,6 +11,7 @@ public record RestoreJobResponse(
         Instant startedAt,
         Instant completedAt,
         Instant cancellationRequestedAt,
+        Instant restoreFromTimestamp,
         Instant updatedAt,
         String sourceTopic,
         String targetTopic,
@@ -20,14 +21,23 @@ public record RestoreJobResponse(
         Long recordsRestored
 ) {
     public static RestoreJobResponse fromEntity(RestoreJobEntity entity) {
+        return fromEntity(entity, null);
+    }
+
+    public static RestoreJobResponse fromEntity(RestoreJobEntity entity, RunningRestoreJob runningRestoreJob) {
+        RestoreJobStatus status = runningRestoreJob == null ? entity.getStatus() : runningRestoreJob.getStatus();
+        Instant cancellationRequestedAt = runningRestoreJob == null
+                ? entity.getCancellationRequestedAt()
+                : runningRestoreJob.getCancellationRequestedAt();
         return new RestoreJobResponse(
                 entity.getId(),
                 entity.getRestoreType(),
-                entity.getStatus(),
+                status,
                 entity.getRequestedAt(),
                 entity.getStartedAt(),
                 entity.getCompletedAt(),
-                entity.getCancellationRequestedAt(),
+                cancellationRequestedAt,
+                entity.getRestoreFromTimestamp(),
                 entity.getUpdatedAt(),
                 entity.getSourceTopic(),
                 entity.getTargetTopic(),

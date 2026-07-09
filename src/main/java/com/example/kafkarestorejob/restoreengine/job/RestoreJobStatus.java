@@ -4,6 +4,7 @@ public enum RestoreJobStatus {
     PENDING,
     RUNNING,
     CANCELLATION_REQUESTED,
+    FINALIZING,
     CANCELLED,
     COMPLETED,
     FAILED

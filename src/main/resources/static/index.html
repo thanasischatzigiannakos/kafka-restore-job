@@ -121,6 +121,8 @@
           <option value="application">application</option>
           <option value="abuse">abuse</option>
         </select>
+        <label for="restoreFromTimestamp">Restore from timestamp</label>
+        <input id="restoreFromTimestamp" type="datetime-local">
         <button id="startRestore">Start restore</button>
         <button id="refreshJobs" class="ghost">Refresh jobs</button>
         <pre id="actionResult">No action yet.</pre>
@@ -149,6 +151,7 @@
             <th>Restore Type</th>
             <th>Status</th>
             <th>Requested</th>
+            <th>Restore From</th>
             <th>Started</th>
             <th>Completed</th>
             <th>Records</th>
@@ -182,6 +185,7 @@
           <td>${job.restoreType}</td>
           <td><span class="status">${job.status}</span></td>
           <td>${job.requestedAt || ""}</td>
+          <td>${job.restoreFromTimestamp || ""}</td>
           <td>${job.startedAt || ""}</td>
           <td>${job.completedAt || ""}</td>
           <td>${job.recordsRestored ?? ""}</td>
@@ -206,11 +210,16 @@
 
     document.getElementById("startRestore").addEventListener("click", async () => {
       const restoreType = document.getElementById("restoreType").value;
+      const restoreFromTimestampValue = document.getElementById("restoreFromTimestamp").value;
+      const requestBody = { restoreType };
+      if (restoreFromTimestampValue) {
+        requestBody.restoreFromTimestamp = new Date(restoreFromTimestampValue).toISOString();
+      }
       try {
         const job = await jsonFetch("/api/restores", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ restoreType })
+          body: JSON.stringify(requestBody)
         });
         actionResult.textContent = JSON.stringify(job, null, 2);
         await loadJobs();

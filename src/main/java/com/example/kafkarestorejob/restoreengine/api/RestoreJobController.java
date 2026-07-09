@@ -2,6 +2,7 @@ package com.example.kafkarestorejob.restoreengine.api;
 
 import com.example.kafkarestorejob.restoreengine.job.RestoreJobCoordinator;
 import com.example.kafkarestorejob.restoreengine.job.RestoreJobResponse;
+import com.example.kafkarestorejob.restoreengine.job.RestoreJobStartResponse;
 import com.example.kafkarestorejob.restoreengine.service.KafkaMessagePreviewService;
 import jakarta.validation.Valid;
 import java.util.List;
@@ -29,8 +30,9 @@ public class RestoreJobController {
     }
 
     @PostMapping("/restores")
-    public ResponseEntity<RestoreJobResponse> startRestore(@Valid @RequestBody RestoreRequest request) {
-        return ResponseEntity.status(HttpStatus.ACCEPTED).body(restoreJobCoordinator.startJob(request.getRestoreType()));
+    public ResponseEntity<RestoreJobStartResponse> startRestore(@Valid @RequestBody RestoreRequest request) {
+        return ResponseEntity.status(HttpStatus.ACCEPTED)
+                .body(restoreJobCoordinator.startJob(request.getRestoreType(), request.getRestoreFromTimestamp()));
     }
 
     @GetMapping("/jobs")
