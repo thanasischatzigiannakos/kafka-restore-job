@@ -60,118 +60,37 @@ public class RestoreReplicationLoop {
                 KafkaConsumer<String, byte[]> consumer =
                         kafkaClientConfiguration.createConsumer(restoreType);
                 KafkaProducer<String, byte[]> producer =
-                        kafkaClientConfiguration.createProducer(restoreType)
+                kafkaClientConfiguration.createProducer(restoreType)
         ) {
             consumer.subscribe(List.of(pipeline.getSourceTopic()));
-            seekToStartingOffsets(
-                    consumer,
-                    pipeline.getSourceTopic(),
-                    restoreFromTimestamp,
-                    engineKafkaProperties.getPollTimeout()
-            );
+            seekToStartingOffsets(consumer, pipeline.getSourceTopic(), restoreFromTimestamp,
+                    engineKafkaProperties.getPollTimeout());
 
             Map<TopicPartition, Long> restoreEndOffsets = captureEndOffsets(consumer);
             Map<TopicPartition, Long> restoredPositions =
                     toPositions(currentOffsets(consumer, restoreEndOffsets.keySet()));
 
-            log.info(
-                    "Captured restore boundary for jobId={} restoreType={}: {}",
-                    context.getJobId(),
-                    restoreType,
-                    restoreEndOffsets
-            );
+            logRestoreBoundary(context, restoreType, restoreEndOffsets);
 
-            if (hasReachedRestoreBoundary(restoredPositions, restoreEndOffsets)) {
-                if (!context.tryMarkFinalizing()) {
-                    handleFinalizingTransitionFailure(context);
-                }
-                log.info(
-                        "Restore job {} reached the boundary before producing records; zero-record restore has no Kafka transaction",
-                        context.getJobId()
-                );
-                return new RestoreExecutionResult(
-                        restoreType,
-                        pipeline.getSourceTopic(),
-                        pipeline.getTargetTopic(),
-                        pipeline.getGroupId(),
-                        pipeline.getTransactionalId(),
-                        pipeline.getMessageType(),
-                        0,
-                        0L,
-                        0
-                );
+            if (isZeroRecordRestore(context, restoreType, restoreEndOffsets, restoredPositions)) {
+                return createResult(restoreType, pipeline, 0, 0L, 0);
             }
 
-            while (true) {
-                context.throwIfCancellationRequested();
-                ConsumerRecords<String, byte[]> polledRecords =
-                        consumer.poll(engineKafkaProperties.getPollTimeout());
-                if (polledRecords.isEmpty()) {
-                    emptyPolls++;
-                    if (emptyPolls >= engineKafkaProperties.getMaxEmptyPollsBeforeFinish()) {
-                        throw new RestoreEngineException(
-                                "Restore did not reach the captured boundary before empty poll limit. jobId="
-                                        + context.getJobId()
-                        );
-                    }
-                    continue;
-                }
-
-                emptyPolls = 0;
-                List<ConsumerRecord<String, byte[]>> recordsToRestore =
-                        filterRecordsWithinBoundary(polledRecords, restoreEndOffsets);
-                if (recordsToRestore.isEmpty()) {
-                    if (hasReachedRestoreBoundary(restoredPositions, restoreEndOffsets)) {
-                        if (!context.tryMarkFinalizing()) {
-                            handleFinalizingTransitionFailure(context);
-                        }
-                        log.info(
-                                "Restore job {} exhausted the captured boundary without additional restorable records",
-                                context.getJobId()
-                        );
-                        break;
-                    }
-                    log.info(
-                            "Ignoring {} records at or beyond the restore boundary for jobId={}",
-                            polledRecords.count(),
-                            context.getJobId()
-                    );
-                    continue;
-                }
-
-                Map<TopicPartition, OffsetAndMetadata> offsets =
-                        offsetCalculator.calculateOffsets(recordsToRestore);
-                Map<TopicPartition, Long> nextRestoredPositions = new HashMap<>(restoredPositions);
-                offsets.forEach(
-                        (partition, offsetMetadata) ->
-                                nextRestoredPositions.put(partition, offsetMetadata.offset()));
-                boolean finalBatch =
-                        hasReachedRestoreBoundary(nextRestoredPositions, restoreEndOffsets);
-
-                restoreBatch(
+            RestoreLoopState loopState = new RestoreLoopState(restoredPositions);
+            while (!loopState.isFinished()) {
+                PollBatchOutcome pollBatchOutcome = pollAndRestoreBatch(
+                        consumer,
                         producer,
-                        consumer.groupMetadata(),
-                        recordsToRestore,
-                        offsets,
                         context,
                         pipeline.getTargetTopic(),
-                        finalBatch
+                        restoreEndOffsets,
+                        engineKafkaProperties,
+                        loopState
                 );
 
-                restoredPositions = nextRestoredPositions;
-                committedBatches++;
-                restoredRecords += recordsToRestore.size();
-                log.info(
-                        "Committed restore batch jobId={} batchNumber={} records={} finalBatch={}",
-                        context.getJobId(),
-                        committedBatches,
-                        recordsToRestore.size(),
-                        finalBatch
-                );
-
-                if (finalBatch) {
-                    break;
-                }
+                emptyPolls = pollBatchOutcome.emptyPolls();
+                committedBatches += pollBatchOutcome.committedBatches();
+                restoredRecords += pollBatchOutcome.restoredRecords();
             }
         }
 
@@ -185,6 +104,194 @@ public class RestoreReplicationLoop {
                 restoredRecords
         );
 
+        return createResult(
+                restoreType,
+                pipeline,
+                committedBatches,
+                restoredRecords,
+                emptyPolls
+        );
+    }
+
+    private PollBatchOutcome pollAndRestoreBatch(
+            KafkaConsumer<String, byte[]> consumer,
+            KafkaProducer<String, byte[]> producer,
+            RestoreJobExecutionContext context,
+            String targetTopic,
+            Map<TopicPartition, Long> restoreEndOffsets,
+            EngineKafkaProperties engineKafkaProperties,
+            RestoreLoopState loopState
+    ) {
+        context.throwIfCancellationRequested();
+        ConsumerRecords<String, byte[]> polledRecords =
+                consumer.poll(engineKafkaProperties.getPollTimeout());
+        if (polledRecords.isEmpty()) {
+            return handleEmptyPoll(context, engineKafkaProperties, loopState);
+        }
+
+        loopState.resetEmptyPolls();
+        List<ConsumerRecord<String, byte[]>> recordsToRestore =
+                filterRecordsWithinBoundary(polledRecords, restoreEndOffsets);
+        if (recordsToRestore.isEmpty()) {
+            return handleEmptyRestoreBatch(context, restoreEndOffsets, loopState, polledRecords.count());
+        }
+
+        return commitRestorableBatch(
+                consumer,
+                producer,
+                context,
+                targetTopic,
+                restoreEndOffsets,
+                loopState,
+                recordsToRestore
+        );
+    }
+
+    private PollBatchOutcome handleEmptyPoll(
+            RestoreJobExecutionContext context,
+            EngineKafkaProperties engineKafkaProperties,
+            RestoreLoopState loopState
+    ) {
+        int emptyPolls = loopState.incrementEmptyPolls();
+        if (emptyPolls >= engineKafkaProperties.getMaxEmptyPollsBeforeFinish()) {
+            throw new RestoreEngineException(
+                    "Restore did not reach the captured boundary before empty poll limit. jobId="
+                            + context.getJobId()
+            );
+        }
+        return PollBatchOutcome.empty(emptyPolls);
+    }
+
+    private PollBatchOutcome handleEmptyRestoreBatch(
+            RestoreJobExecutionContext context,
+            Map<TopicPartition, Long> restoreEndOffsets,
+            RestoreLoopState loopState,
+            int polledRecordCount
+    ) {
+        if (hasReachedRestoreBoundary(loopState.getRestoredPositions(), restoreEndOffsets)) {
+            markFinalizing(context);
+            log.info(
+                    "Restore job {} exhausted the captured boundary without additional restorable records",
+                    context.getJobId()
+            );
+            loopState.finish();
+            return PollBatchOutcome.noCommit(loopState.getEmptyPolls());
+        }
+
+        log.info(
+                "Ignoring {} records at or beyond the restore boundary for jobId={}",
+                polledRecordCount,
+                context.getJobId()
+        );
+        return PollBatchOutcome.noCommit(loopState.getEmptyPolls());
+    }
+
+    private PollBatchOutcome commitRestorableBatch(
+            KafkaConsumer<String, byte[]> consumer,
+            KafkaProducer<String, byte[]> producer,
+            RestoreJobExecutionContext context,
+            String targetTopic,
+            Map<TopicPartition, Long> restoreEndOffsets,
+            RestoreLoopState loopState,
+            List<ConsumerRecord<String, byte[]>> recordsToRestore
+    ) {
+        Map<TopicPartition, OffsetAndMetadata> offsets =
+                offsetCalculator.calculateOffsets(recordsToRestore);
+        Map<TopicPartition, Long> nextRestoredPositions = nextRestoredPositions(
+                loopState.getRestoredPositions(),
+                offsets
+        );
+        boolean finalBatch = hasReachedRestoreBoundary(nextRestoredPositions, restoreEndOffsets);
+
+        restoreBatch(
+                producer,
+                consumer.groupMetadata(),
+                recordsToRestore,
+                offsets,
+                context,
+                targetTopic,
+                finalBatch
+        );
+
+        loopState.updateRestoredPositions(nextRestoredPositions);
+        loopState.recordCommittedBatch(finalBatch);
+        logCommittedBatch(context, loopState.getCommittedBatches(), recordsToRestore.size(), finalBatch);
+        return PollBatchOutcome.committed(
+                loopState.getEmptyPolls(),
+                recordsToRestore.size()
+        );
+    }
+
+    private Map<TopicPartition, Long> nextRestoredPositions(
+            Map<TopicPartition, Long> restoredPositions,
+            Map<TopicPartition, OffsetAndMetadata> offsets
+    ) {
+        Map<TopicPartition, Long> nextRestoredPositions = new HashMap<>(restoredPositions);
+        offsets.forEach(
+                (partition, offsetMetadata) ->
+                        nextRestoredPositions.put(partition, offsetMetadata.offset()));
+        return nextRestoredPositions;
+    }
+
+    private boolean isZeroRecordRestore(
+            RestoreJobExecutionContext context,
+            String restoreType,
+            Map<TopicPartition, Long> restoreEndOffsets,
+            Map<TopicPartition, Long> restoredPositions
+    ) {
+        if (!hasReachedRestoreBoundary(restoredPositions, restoreEndOffsets)) {
+            return false;
+        }
+
+        markFinalizing(context);
+        log.info(
+                "Restore job {} reached the boundary before producing records; zero-record restore has no Kafka transaction",
+                context.getJobId()
+        );
+        return true;
+    }
+
+    private void markFinalizing(RestoreJobExecutionContext context) {
+        if (!context.tryMarkFinalizing()) {
+            handleFinalizingTransitionFailure(context);
+        }
+    }
+
+    private void logRestoreBoundary(
+            RestoreJobExecutionContext context,
+            String restoreType,
+            Map<TopicPartition, Long> restoreEndOffsets
+    ) {
+        log.info(
+                "Captured restore boundary for jobId={} restoreType={}: {}",
+                context.getJobId(),
+                restoreType,
+                restoreEndOffsets
+        );
+    }
+
+    private void logCommittedBatch(
+            RestoreJobExecutionContext context,
+            int committedBatches,
+            int recordCount,
+            boolean finalBatch
+    ) {
+        log.info(
+                "Committed restore batch jobId={} batchNumber={} records={} finalBatch={}",
+                context.getJobId(),
+                committedBatches,
+                recordCount,
+                finalBatch
+        );
+    }
+
+    private RestoreExecutionResult createResult(
+            String restoreType,
+            EngineKafkaProperties.PipelineProperties pipeline,
+            int committedBatches,
+            long restoredRecords,
+            int emptyPolls
+    ) {
         return new RestoreExecutionResult(
                 restoreType,
                 pipeline.getSourceTopic(),
@@ -391,6 +498,75 @@ public class RestoreReplicationLoop {
                     "Kafka transaction abort also failed after restore batch failure",
                     abortException
             );
+        }
+    }
+
+    private static final class RestoreLoopState {
+
+        private Map<TopicPartition, Long> restoredPositions;
+        private int emptyPolls;
+        private int committedBatches;
+        private boolean finished;
+
+        private RestoreLoopState(Map<TopicPartition, Long> restoredPositions) {
+            this.restoredPositions = restoredPositions;
+        }
+
+        private Map<TopicPartition, Long> getRestoredPositions() {
+            return restoredPositions;
+        }
+
+        private int getEmptyPolls() {
+            return emptyPolls;
+        }
+
+        private int getCommittedBatches() {
+            return committedBatches;
+        }
+
+        private boolean isFinished() {
+            return finished;
+        }
+
+        private int incrementEmptyPolls() {
+            emptyPolls++;
+            return emptyPolls;
+        }
+
+        private void resetEmptyPolls() {
+            emptyPolls = 0;
+        }
+
+        private void updateRestoredPositions(Map<TopicPartition, Long> nextRestoredPositions) {
+            restoredPositions = nextRestoredPositions;
+        }
+
+        private void recordCommittedBatch(boolean finalBatch) {
+            committedBatches++;
+            finished = finalBatch;
+        }
+
+        private void finish() {
+            finished = true;
+        }
+    }
+
+    private record PollBatchOutcome(
+            int emptyPolls,
+            int committedBatches,
+            long restoredRecords
+    ) {
+
+        private static PollBatchOutcome empty(int emptyPolls) {
+            return new PollBatchOutcome(emptyPolls, 0, 0L);
+        }
+
+        private static PollBatchOutcome noCommit(int emptyPolls) {
+            return new PollBatchOutcome(emptyPolls, 0, 0L);
+        }
+
+        private static PollBatchOutcome committed(int emptyPolls, long restoredRecords) {
+            return new PollBatchOutcome(emptyPolls, 1, restoredRecords);
         }
     }
 }

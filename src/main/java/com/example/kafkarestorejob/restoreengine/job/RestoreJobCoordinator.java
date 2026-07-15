@@ -3,6 +3,7 @@ package com.example.kafkarestorejob.restoreengine.job;
 import com.example.kafkarestorejob.restoreengine.config.EngineKafkaProperties;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreExecutionResult;
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -76,25 +77,18 @@ public class RestoreJobCoordinator {
     }
 
     public RestoreJobResponse getJob(UUID jobId) {
-        InMemoryRestoreJob job = jobs.get(jobId);
-        if (job == null) {
-            throw new IllegalStateException("Restore job not found: " + jobId);
-        }
-        return RestoreJobResponse.fromInMemoryJob(job);
+        return RestoreJobResponse.fromInMemoryJob(getExistingJob(jobId));
     }
 
     public List<RestoreJobResponse> listJobs() {
         return jobs.values().stream()
                 .map(RestoreJobResponse::fromInMemoryJob)
-                .sorted((left, right) -> right.requestedAt().compareTo(left.requestedAt()))
+                .sorted(Comparator.comparing(RestoreJobResponse::requestedAt).reversed())
                 .toList();
     }
 
     public RestoreJobResponse requestCancellation(UUID jobId) {
-        InMemoryRestoreJob job = jobs.get(jobId);
-        if (job == null) {
-            throw new IllegalStateException("Restore job not found: " + jobId);
-        }
+        InMemoryRestoreJob job = getExistingJob(jobId);
         RestoreJobExecutionContext context = job.getContext();
 
         if (!context.requestCancellation()) {
@@ -145,5 +139,13 @@ public class RestoreJobCoordinator {
                         + " with status "
                         + status
         );
+    }
+
+    private InMemoryRestoreJob getExistingJob(UUID jobId) {
+        InMemoryRestoreJob job = jobs.get(jobId);
+        if (job == null) {
+            throw new IllegalStateException("Restore job not found: " + jobId);
+        }
+        return job;
     }
 }

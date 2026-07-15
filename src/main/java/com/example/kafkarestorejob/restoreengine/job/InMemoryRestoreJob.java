@@ -4,13 +4,19 @@ import com.example.kafkarestorejob.restoreengine.kafka.RestoreExecutionResult;
 import java.time.Instant;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
+import lombok.Getter;
 
-final class InMemoryRestoreJob {
+public final class InMemoryRestoreJob {
 
+    @Getter
     private final UUID jobId;
+    @Getter
     private final String restoreType;
+    @Getter
     private final Instant requestedAt;
+    @Getter
     private final Instant restoreFromTimestamp;
+    @Getter
     private final RestoreJobExecutionContext context;
     private final AtomicReference<Instant> startedAt = new AtomicReference<>();
     private final AtomicReference<Instant> completedAt = new AtomicReference<>();
@@ -18,7 +24,7 @@ final class InMemoryRestoreJob {
     private final AtomicReference<RestoreExecutionResult> executionResult = new AtomicReference<>();
     private final AtomicReference<String> errorMessage = new AtomicReference<>();
 
-    InMemoryRestoreJob(
+    public InMemoryRestoreJob(
             UUID jobId,
             String restoreType,
             Instant requestedAt,
@@ -33,73 +39,55 @@ final class InMemoryRestoreJob {
         this.updatedAt.set(requestedAt);
     }
 
-    UUID getJobId() {
-        return jobId;
-    }
-
-    String getRestoreType() {
-        return restoreType;
-    }
-
-    Instant getRequestedAt() {
-        return requestedAt;
-    }
-
-    Instant getRestoreFromTimestamp() {
-        return restoreFromTimestamp;
-    }
-
-    RestoreJobExecutionContext getContext() {
-        return context;
-    }
-
-    Instant getStartedAt() {
+    public Instant getStartedAt() {
         return startedAt.get();
     }
 
-    Instant getCompletedAt() {
+    public Instant getCompletedAt() {
         return completedAt.get();
     }
 
-    Instant getUpdatedAt() {
+    public Instant getUpdatedAt() {
         return updatedAt.get();
     }
 
-    RestoreExecutionResult getExecutionResult() {
+    public RestoreExecutionResult getExecutionResult() {
         return executionResult.get();
     }
 
-    String getErrorMessage() {
+    public String getErrorMessage() {
         return errorMessage.get();
     }
 
-    void markStarted() {
-        Instant now = Instant.now();
-        startedAt.compareAndSet(null, now);
-        updatedAt.set(now);
+    public void markStarted() {
+        updateTimestamps(startedAt);
     }
 
-    void recordExecutionResult(RestoreExecutionResult result) {
+    public void recordExecutionResult(RestoreExecutionResult result) {
         executionResult.set(result);
-        updatedAt.set(Instant.now());
+        touch();
     }
 
-    void markCompleted() {
-        Instant now = Instant.now();
-        completedAt.compareAndSet(null, now);
-        updatedAt.set(now);
+    public void markCompleted() {
+        updateTimestamps(completedAt);
     }
 
-    void markCancelled() {
-        Instant now = Instant.now();
-        completedAt.compareAndSet(null, now);
-        updatedAt.set(now);
+    public void markCancelled() {
+        updateTimestamps(completedAt);
     }
 
-    void recordFailure(Throwable failure) {
+    public void recordFailure(Throwable failure) {
         errorMessage.set(failure.getMessage());
+        updateTimestamps(completedAt);
+    }
+
+    private void updateTimestamps(AtomicReference<Instant> timestampReference) {
         Instant now = Instant.now();
-        completedAt.compareAndSet(null, now);
+        timestampReference.compareAndSet(null, now);
         updatedAt.set(now);
+    }
+
+    private void touch() {
+        updatedAt.set(Instant.now());
     }
 }

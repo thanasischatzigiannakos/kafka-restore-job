@@ -3,9 +3,11 @@ package com.example.kafkarestorejob.restoreengine.job;
 import java.time.Instant;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
+import lombok.Getter;
 
 public final class RestoreJobExecutionContext {
 
+    @Getter
     private final UUID jobId;
     private final AtomicReference<RestoreJobStatus> status =
             new AtomicReference<>(RestoreJobStatus.PENDING);
@@ -13,10 +15,6 @@ public final class RestoreJobExecutionContext {
 
     public RestoreJobExecutionContext(UUID jobId) {
         this.jobId = jobId;
-    }
-
-    public UUID getJobId() {
-        return jobId;
     }
 
     public RestoreJobStatus getStatus() {
