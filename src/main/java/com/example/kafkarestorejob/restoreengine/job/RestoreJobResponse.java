@@ -20,31 +20,24 @@ public record RestoreJobResponse(
         Integer batchesCommitted,
         Long recordsRestored
 ) {
-    public static RestoreJobResponse fromEntity(RestoreJobEntity entity) {
-        return fromEntity(entity, null);
-    }
-
-    public static RestoreJobResponse fromEntity(RestoreJobEntity entity, RunningRestoreJob runningRestoreJob) {
-        RestoreJobStatus status = runningRestoreJob == null ? entity.getStatus() : runningRestoreJob.getStatus();
-        Instant cancellationRequestedAt = runningRestoreJob == null
-                ? entity.getCancellationRequestedAt()
-                : runningRestoreJob.getCancellationRequestedAt();
+    public static RestoreJobResponse fromContext(RestoreJobExecutionContext context) {
+        var result = context.getExecutionResult();
         return new RestoreJobResponse(
-                entity.getId(),
-                entity.getRestoreType(),
-                status,
-                entity.getRequestedAt(),
-                entity.getStartedAt(),
-                entity.getCompletedAt(),
-                cancellationRequestedAt,
-                entity.getRestoreFromTimestamp(),
-                entity.getUpdatedAt(),
-                entity.getSourceTopic(),
-                entity.getTargetTopic(),
-                entity.getMessageType(),
-                entity.getErrorMessage(),
-                entity.getBatchesCommitted(),
-                entity.getRecordsRestored()
+                context.getJobId(),
+                context.getRestoreType(),
+                context.getStatus(),
+                context.getRequestedAt(),
+                context.getStartedAt(),
+                context.getCompletedAt(),
+                context.getCancellationRequestedAt(),
+                context.getRestoreFromTimestamp(),
+                context.getUpdatedAt(),
+                result == null ? null : result.sourceTopic(),
+                result == null ? null : result.targetTopic(),
+                result == null ? null : result.messageType(),
+                context.getErrorMessage(),
+                result == null ? null : result.batchesCommitted(),
+                result == null ? null : result.recordsRestored()
         );
     }
 }
