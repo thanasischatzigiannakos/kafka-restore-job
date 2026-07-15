@@ -19,7 +19,6 @@ import com.example.kafkarestorejob.restoreengine.kafka.KafkaOffsetCalculator;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreEngineException;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreExecutionResult;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -319,12 +318,7 @@ class RestoreReplicationLoopTest {
     }
 
     private RestoreJobExecutionContext runningContext() {
-        RestoreJobExecutionContext context = new RestoreJobExecutionContext(
-                UUID.randomUUID(),
-                RESTORE_TYPE,
-                Instant.now(),
-                null
-        );
+        RestoreJobExecutionContext context = new RestoreJobExecutionContext(UUID.randomUUID());
         context.markRunning();
         return context;
     }

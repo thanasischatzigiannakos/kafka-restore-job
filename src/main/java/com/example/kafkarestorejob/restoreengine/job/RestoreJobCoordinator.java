@@ -22,7 +22,7 @@ public class RestoreJobCoordinator {
     private final RestoreReplicationLoop restoreReplicationLoop;
     private final EngineKafkaProperties engineKafkaProperties;
     private final ThreadPoolTaskExecutor restoreJobExecutor;
-    private final Map<UUID, RestoreJobExecutionContext> jobs = new ConcurrentHashMap<>();
+    private final Map<UUID, InMemoryRestoreJob> jobs = new ConcurrentHashMap<>();
     private final Map<UUID, RestoreJobExecutionContext> runningJobs = new ConcurrentHashMap<>();
     private final Object activeJobLock = new Object();
 
@@ -46,20 +46,22 @@ public class RestoreJobCoordinator {
             }
 
             Instant requestedAt = Instant.now();
-            RestoreJobExecutionContext context = new RestoreJobExecutionContext(
+            RestoreJobExecutionContext context = new RestoreJobExecutionContext(jobId);
+            InMemoryRestoreJob job = new InMemoryRestoreJob(
                     jobId,
                     restoreType,
                     requestedAt,
-                    restoreFromTimestamp
+                    restoreFromTimestamp,
+                    context
             );
-            jobs.put(jobId, context);
+            jobs.put(jobId, job);
             runningJobs.put(jobId, context);
             try {
                 restoreJobExecutor.submit(
-                        () -> executeJob(jobId, restoreType, restoreFromTimestamp, context));
+                        () -> executeJob(jobId, restoreType, restoreFromTimestamp, job));
             } catch (RejectedExecutionException exception) {
                 runningJobs.remove(jobId);
-                context.recordFailure(exception);
+                job.recordFailure(exception);
                 context.markFailed();
                 throw exception;
             } catch (RuntimeException exception) {
@@ -74,56 +76,61 @@ public class RestoreJobCoordinator {
     }
 
     public RestoreJobResponse getJob(UUID jobId) {
-        RestoreJobExecutionContext context = jobs.get(jobId);
-        if (context == null) {
+        InMemoryRestoreJob job = jobs.get(jobId);
+        if (job == null) {
             throw new IllegalStateException("Restore job not found: " + jobId);
         }
-        return RestoreJobResponse.fromContext(context);
+        return RestoreJobResponse.fromInMemoryJob(job);
     }
 
     public List<RestoreJobResponse> listJobs() {
         return jobs.values().stream()
-                .map(RestoreJobResponse::fromContext)
+                .map(RestoreJobResponse::fromInMemoryJob)
                 .sorted((left, right) -> right.requestedAt().compareTo(left.requestedAt()))
                 .toList();
     }
 
     public RestoreJobResponse requestCancellation(UUID jobId) {
-        RestoreJobExecutionContext context = jobs.get(jobId);
-        if (context == null) {
+        InMemoryRestoreJob job = jobs.get(jobId);
+        if (job == null) {
             throw new IllegalStateException("Restore job not found: " + jobId);
         }
+        RestoreJobExecutionContext context = job.getContext();
 
         if (!context.requestCancellation()) {
             throw cancellationRejected(jobId, context.getStatus());
         }
 
         log.info("Accepted cancellation request for restore job {}", jobId);
-        return RestoreJobResponse.fromContext(context);
+        return RestoreJobResponse.fromInMemoryJob(job);
     }
 
     private void executeJob(
             UUID jobId,
             String restoreType,
             Instant restoreFromTimestamp,
-            RestoreJobExecutionContext context
+            InMemoryRestoreJob job
     ) {
+        RestoreJobExecutionContext context = job.getContext();
         try {
             context.markRunning();
+            job.markStarted();
             log.info("Restore job {} entered RUNNING", jobId);
 
             RestoreExecutionResult result =
                     restoreReplicationLoop.restore(restoreType, restoreFromTimestamp, context);
 
-            context.recordExecutionResult(result);
+            job.recordExecutionResult(result);
             context.markCompleted();
+            job.markCompleted();
             log.info("Restore job {} entered COMPLETED", jobId);
         } catch (RestoreJobCancellationException exception) {
             context.markCancelled();
+            job.markCancelled();
             log.info("Restore job {} entered CANCELLED", jobId);
         } catch (RuntimeException exception) {
             if (context.markFailed()) {
-                context.recordFailure(exception);
+                job.recordFailure(exception);
             }
             log.error("Restore job {} entered FAILED", jobId, exception);
         } finally {

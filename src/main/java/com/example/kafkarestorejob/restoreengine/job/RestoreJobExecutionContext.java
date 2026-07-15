@@ -1,6 +1,5 @@
 package com.example.kafkarestorejob.restoreengine.job;
 
-import com.example.kafkarestorejob.restoreengine.kafka.RestoreExecutionResult;
 import java.time.Instant;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
@@ -8,45 +7,16 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class RestoreJobExecutionContext {
 
     private final UUID jobId;
-    private final String restoreType;
-    private final Instant requestedAt;
-    private final Instant restoreFromTimestamp;
     private final AtomicReference<RestoreJobStatus> status =
             new AtomicReference<>(RestoreJobStatus.PENDING);
     private final AtomicReference<Instant> cancellationRequestedAt = new AtomicReference<>();
-    private final AtomicReference<Instant> startedAt = new AtomicReference<>();
-    private final AtomicReference<Instant> completedAt = new AtomicReference<>();
-    private final AtomicReference<Instant> updatedAt = new AtomicReference<>();
-    private final AtomicReference<RestoreExecutionResult> executionResult = new AtomicReference<>();
-    private final AtomicReference<String> errorMessage = new AtomicReference<>();
 
-    public RestoreJobExecutionContext(
-            UUID jobId,
-            String restoreType,
-            Instant requestedAt,
-            Instant restoreFromTimestamp
-    ) {
+    public RestoreJobExecutionContext(UUID jobId) {
         this.jobId = jobId;
-        this.restoreType = restoreType;
-        this.requestedAt = requestedAt;
-        this.restoreFromTimestamp = restoreFromTimestamp;
-        this.updatedAt.set(requestedAt);
     }
 
     public UUID getJobId() {
         return jobId;
-    }
-
-    public String getRestoreType() {
-        return restoreType;
-    }
-
-    public Instant getRequestedAt() {
-        return requestedAt;
-    }
-
-    public Instant getRestoreFromTimestamp() {
-        return restoreFromTimestamp;
     }
 
     public RestoreJobStatus getStatus() {
@@ -57,31 +27,8 @@ public final class RestoreJobExecutionContext {
         return cancellationRequestedAt.get();
     }
 
-    public Instant getStartedAt() {
-        return startedAt.get();
-    }
-
-    public Instant getCompletedAt() {
-        return completedAt.get();
-    }
-
-    public Instant getUpdatedAt() {
-        return updatedAt.get();
-    }
-
-    public RestoreExecutionResult getExecutionResult() {
-        return executionResult.get();
-    }
-
-    public String getErrorMessage() {
-        return errorMessage.get();
-    }
-
     public void markRunning() {
         if (status.compareAndSet(RestoreJobStatus.PENDING, RestoreJobStatus.RUNNING)) {
-            Instant now = Instant.now();
-            startedAt.compareAndSet(null, now);
-            updatedAt.set(now);
             return;
         }
 
@@ -108,9 +55,7 @@ public final class RestoreJobExecutionContext {
             }
 
             if (status.compareAndSet(currentStatus, RestoreJobStatus.CANCELLATION_REQUESTED)) {
-                Instant now = Instant.now();
-                cancellationRequestedAt.compareAndSet(null, now);
-                updatedAt.set(now);
+                cancellationRequestedAt.compareAndSet(null, Instant.now());
                 return true;
             }
         }
@@ -131,18 +76,11 @@ public final class RestoreJobExecutionContext {
     }
 
     public boolean tryMarkFinalizing() {
-        if (status.compareAndSet(RestoreJobStatus.RUNNING, RestoreJobStatus.FINALIZING)) {
-            updatedAt.set(Instant.now());
-            return true;
-        }
-        return false;
+        return status.compareAndSet(RestoreJobStatus.RUNNING, RestoreJobStatus.FINALIZING);
     }
 
     public void markCompleted() {
         if (status.compareAndSet(RestoreJobStatus.FINALIZING, RestoreJobStatus.COMPLETED)) {
-            Instant now = Instant.now();
-            completedAt.compareAndSet(null, now);
-            updatedAt.set(now);
             return;
         }
 
@@ -153,9 +91,6 @@ public final class RestoreJobExecutionContext {
         if (status.compareAndSet(
                 RestoreJobStatus.CANCELLATION_REQUESTED,
                 RestoreJobStatus.CANCELLED)) {
-            Instant now = Instant.now();
-            completedAt.compareAndSet(null, now);
-            updatedAt.set(now);
             return;
         }
 
@@ -180,22 +115,9 @@ public final class RestoreJobExecutionContext {
             }
 
             if (status.compareAndSet(currentStatus, RestoreJobStatus.FAILED)) {
-                Instant now = Instant.now();
-                completedAt.compareAndSet(null, now);
-                updatedAt.set(now);
                 return true;
             }
         }
-    }
-
-    public void recordExecutionResult(RestoreExecutionResult result) {
-        executionResult.set(result);
-        updatedAt.set(Instant.now());
-    }
-
-    public void recordFailure(Throwable failure) {
-        errorMessage.set(failure.getMessage());
-        updatedAt.set(Instant.now());
     }
 
     private RestoreJobStateException invalidTransition(

@@ -20,22 +20,23 @@ public record RestoreJobResponse(
         Integer batchesCommitted,
         Long recordsRestored
 ) {
-    public static RestoreJobResponse fromContext(RestoreJobExecutionContext context) {
-        var result = context.getExecutionResult();
+    public static RestoreJobResponse fromInMemoryJob(InMemoryRestoreJob job) {
+        var context = job.getContext();
+        var result = job.getExecutionResult();
         return new RestoreJobResponse(
-                context.getJobId(),
-                context.getRestoreType(),
+                job.getJobId(),
+                job.getRestoreType(),
                 context.getStatus(),
-                context.getRequestedAt(),
-                context.getStartedAt(),
-                context.getCompletedAt(),
+                job.getRequestedAt(),
+                job.getStartedAt(),
+                job.getCompletedAt(),
                 context.getCancellationRequestedAt(),
-                context.getRestoreFromTimestamp(),
-                context.getUpdatedAt(),
+                job.getRestoreFromTimestamp(),
+                job.getUpdatedAt(),
                 result == null ? null : result.sourceTopic(),
                 result == null ? null : result.targetTopic(),
                 result == null ? null : result.messageType(),
-                context.getErrorMessage(),
+                job.getErrorMessage(),
                 result == null ? null : result.batchesCommitted(),
                 result == null ? null : result.recordsRestored()
         );

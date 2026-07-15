@@ -144,11 +144,6 @@ class RestoreJobExecutionContextTest {
     }
 
     private RestoreJobExecutionContext newContext() {
-        return new RestoreJobExecutionContext(
-                UUID.randomUUID(),
-                "application",
-                Instant.now(),
-                null
-        );
+        return new RestoreJobExecutionContext(UUID.randomUUID());
     }
 }

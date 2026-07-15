@@ -44,8 +44,9 @@ class RestoreJobCoordinatorTest {
     @Test
     void marksRunningBeforeInvokingLoop() {
         UUID jobId = UUID.randomUUID();
-        RestoreJobExecutionContext context = newContext(jobId);
-        addRunningJob(jobId, context);
+        InMemoryRestoreJob job = newJob(jobId);
+        RestoreJobExecutionContext context = job.getContext();
+        addRunningJob(jobId, job);
         RestoreExecutionResult result = result();
         when(restoreReplicationLoop.restore("application", null, context)).thenAnswer(invocation -> {
             assertEquals(RestoreJobStatus.RUNNING, context.getStatus());
@@ -59,7 +60,7 @@ class RestoreJobCoordinatorTest {
                 jobId,
                 "application",
                 null,
-                context
+                job
         );
 
         verify(restoreReplicationLoop).restore("application", null, context);
@@ -68,9 +69,10 @@ class RestoreJobCoordinatorTest {
     @Test
     void cancellationDelegatesToContextAndReturnsUpdatedSnapshot() {
         UUID jobId = UUID.randomUUID();
-        RestoreJobExecutionContext context = newContext(jobId);
+        InMemoryRestoreJob job = newJob(jobId);
+        RestoreJobExecutionContext context = job.getContext();
         context.markRunning();
-        addJob(jobId, context);
+        addJob(jobId, job);
 
         RestoreJobResponse response = coordinator.requestCancellation(jobId);
 
@@ -80,10 +82,11 @@ class RestoreJobCoordinatorTest {
     @Test
     void cancellationIsRejectedAfterFinalizing() {
         UUID jobId = UUID.randomUUID();
-        RestoreJobExecutionContext context = newContext(jobId);
+        InMemoryRestoreJob job = newJob(jobId);
+        RestoreJobExecutionContext context = job.getContext();
         context.markRunning();
         context.tryMarkFinalizing();
-        addJob(jobId, context);
+        addJob(jobId, job);
 
         assertThrows(IllegalStateException.class, () -> coordinator.requestCancellation(jobId));
     }
@@ -91,8 +94,9 @@ class RestoreJobCoordinatorTest {
     @Test
     void recordsResultBeforeMarkingCompleted() {
         UUID jobId = UUID.randomUUID();
-        RestoreJobExecutionContext context = newContext(jobId);
-        addRunningJob(jobId, context);
+        InMemoryRestoreJob job = newJob(jobId);
+        RestoreJobExecutionContext context = job.getContext();
+        addRunningJob(jobId, job);
         RestoreExecutionResult result = result();
         when(restoreReplicationLoop.restore("application", null, context)).thenAnswer(invocation -> {
             context.tryMarkFinalizing();
@@ -106,18 +110,19 @@ class RestoreJobCoordinatorTest {
                 jobId,
                 "application",
                 null,
-                context
+                job
         );
 
-        assertEquals(result, context.getExecutionResult());
+        assertEquals(result, job.getExecutionResult());
         assertEquals(RestoreJobStatus.COMPLETED, context.getStatus());
     }
 
     @Test
     void cancellationExceptionProducesCancelled() {
         UUID jobId = UUID.randomUUID();
-        RestoreJobExecutionContext context = newContext(jobId);
-        addRunningJob(jobId, context);
+        InMemoryRestoreJob job = newJob(jobId);
+        RestoreJobExecutionContext context = job.getContext();
+        addRunningJob(jobId, job);
         when(restoreReplicationLoop.restore("application", null, context)).thenAnswer(invocation -> {
             context.requestCancellation();
             throw new RestoreJobCancellationException("cancelled");
@@ -129,7 +134,7 @@ class RestoreJobCoordinatorTest {
                 jobId,
                 "application",
                 null,
-                context
+                job
         );
 
         assertEquals(RestoreJobStatus.CANCELLED, context.getStatus());
@@ -138,8 +143,9 @@ class RestoreJobCoordinatorTest {
     @Test
     void runtimeExceptionProducesFailed() {
         UUID jobId = UUID.randomUUID();
-        RestoreJobExecutionContext context = newContext(jobId);
-        addRunningJob(jobId, context);
+        InMemoryRestoreJob job = newJob(jobId);
+        RestoreJobExecutionContext context = job.getContext();
+        addRunningJob(jobId, job);
         RuntimeException failure = new RuntimeException("boom");
         when(restoreReplicationLoop.restore("application", null, context)).thenThrow(failure);
 
@@ -149,18 +155,19 @@ class RestoreJobCoordinatorTest {
                 jobId,
                 "application",
                 null,
-                context
+                job
         );
 
         assertEquals(RestoreJobStatus.FAILED, context.getStatus());
-        assertEquals("boom", context.getErrorMessage());
+        assertEquals("boom", job.getErrorMessage());
     }
 
     @Test
     void alwaysRemovesJobFromRunningMap() {
         UUID jobId = UUID.randomUUID();
-        RestoreJobExecutionContext context = newContext(jobId);
-        addRunningJob(jobId, context);
+        InMemoryRestoreJob job = newJob(jobId);
+        RestoreJobExecutionContext context = job.getContext();
+        addRunningJob(jobId, job);
         when(restoreReplicationLoop.restore("application", null, context))
                 .thenThrow(new RuntimeException("boom"));
 
@@ -170,7 +177,7 @@ class RestoreJobCoordinatorTest {
                 jobId,
                 "application",
                 null,
-                context
+                job
         );
 
         assertEquals(0, runningJobs().size());
@@ -184,21 +191,21 @@ class RestoreJobCoordinatorTest {
         );
     }
 
-    private void addRunningJob(UUID jobId, RestoreJobExecutionContext context) {
-        runningJobs().put(jobId, context);
-        jobs().put(jobId, context);
+    private void addRunningJob(UUID jobId, InMemoryRestoreJob job) {
+        runningJobs().put(jobId, job.getContext());
+        jobs().put(jobId, job);
     }
 
     @SuppressWarnings("unchecked")
-    private Map<UUID, RestoreJobExecutionContext> jobs() {
-        return (Map<UUID, RestoreJobExecutionContext>) ReflectionTestUtils.getField(
+    private Map<UUID, InMemoryRestoreJob> jobs() {
+        return (Map<UUID, InMemoryRestoreJob>) ReflectionTestUtils.getField(
                 coordinator,
                 "jobs"
         );
     }
 
-    private void addJob(UUID jobId, RestoreJobExecutionContext context) {
-        jobs().put(jobId, context);
+    private void addJob(UUID jobId, InMemoryRestoreJob job) {
+        jobs().put(jobId, job);
     }
 
     private RestoreExecutionResult result() {
@@ -215,12 +222,13 @@ class RestoreJobCoordinatorTest {
         );
     }
 
-    private RestoreJobExecutionContext newContext(UUID jobId) {
-        return new RestoreJobExecutionContext(
+    private InMemoryRestoreJob newJob(UUID jobId) {
+        return new InMemoryRestoreJob(
                 jobId,
                 "application",
                 Instant.now(),
-                null
+                null,
+                new RestoreJobExecutionContext(jobId)
         );
     }
 }
