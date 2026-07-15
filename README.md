@@ -1,83 +1,269 @@
 # Kafka Restore Engine
 
-Java 17 Spring Boot restore engine that restores Kafka source topics into Kafka target topics using batch-level Kafka transactions.
+Java 17 Spring Boot restore engine that copies records from configured Kafka source topics to configured Kafka target topics using Kafka transactions.
 
-## Restore model
+The current implementation tracks restore jobs in memory. It does not persist job state to the database during execution, and it does not update ZooKeeper as part of the active restore flow.
 
-The frontend starts a restore by sending a `restoreType`, for example:
+## Runtime Summary
 
-- `application`
-- `abuse`
+At a high level, the system does four things:
 
-The restore type resolves:
+1. Accept a restore request for a configured `restoreType`.
+2. Start an asynchronous background job.
+3. Read source-topic records up to a fixed restore boundary.
+4. Write each consumed batch into the target topic inside its own Kafka transaction.
 
-- the Kafka pipeline to use
-- the source topic
-- the target topic
-- the stable consumer `group.id`
-- the stable producer `transactional.id`
-- the batch size
-- the message type
-- the transformer implementation
-- the future verification/check implementation
+The main goals of the runtime design are:
 
-The controller does not hardcode topics. It resolves the configured pipeline from `engine.kafka.pipelines.<restoreType>.*`.
+- atomic batch-level commit of target records and source offsets
+- single-threaded produce path
+- safe cancellation while the job is still `RUNNING`
+- deterministic completion based on a fixed Kafka end-offset snapshot
 
-## End-To-End Runtime Flow
+## Request Flow
 
-The runtime flow is intentionally split into clear stages:
+### Start restore
 
-1. frontend calls `POST /api/restores` with a `restoreType`
-2. the API creates a persistent restore job row and returns a job id
-3. a background worker resolves the Kafka pipeline for that restore type
-4. the worker consumes a batch from the source topic
-5. each Kafka message is unpacked from raw `byte[]` into a typed domain object
-6. the typed object is inspected for nested binary-document references
-7. each discovered binary reference is verified in S3
-8. only verified records are produced to the target topic
-9. source offsets are committed with `sendOffsetsToTransaction(...)`
-10. the Kafka transaction is committed for the batch
-11. after the full restore finishes, ZooKeeper state can be updated
+The frontend or caller sends:
 
-Kafka IO stays byte-based.
-Deserialization, nested-field traversal, and binary verification are separate layers.
-
-## UI And Operational APIs
-
-A minimal admin UI is served at:
-
-```text
-/
+```http
+POST /api/restores
 ```
 
-It can:
+with a body such as:
 
-- start a restore job
-- preview source-topic messages
-- preview target-topic messages
-- list recent restore jobs
-- request cancellation for a running job
+```json
+{
+  "restoreType": "application",
+  "restoreFromTimestamp": "2026-07-09T10:00:00Z"
+}
+```
 
-Main APIs:
+Flow:
 
-- `POST /api/restores`
-- `GET /api/jobs`
-- `GET /api/jobs/{jobId}`
-- `POST /api/jobs/{jobId}/cancel`
-- `GET /api/pipelines/{restoreType}/messages?topic=source|target&limit=10`
+1. `RestoreJobController` receives the request.
+2. `RestoreJobCoordinator.startJob(...)` validates that the `restoreType` exists in Kafka configuration.
+3. The coordinator creates:
+   - a new `jobId`
+   - a `RestoreJobExecutionContext` for atomic lifecycle transitions
+   - an `InMemoryRestoreJob` that holds request/result metadata for API responses
+4. The job is stored in the coordinator's in-memory maps.
+5. The coordinator submits the actual work to `restoreJobExecutor`.
+6. The API immediately returns `202 Accepted` with the job id.
 
-## Job Lifecycle
+### Query job state
 
-Restore execution is now asynchronous.
+The frontend can call:
 
-When a restore starts:
+```http
+GET /api/jobs
+GET /api/jobs/{jobId}
+```
 
-- the API creates a job id
-- the job is persisted in the database
-- the API returns immediately with `202 Accepted`
-- the actual Kafka restore runs in a background executor
+These endpoints read directly from the coordinator's in-memory job store and return `RestoreJobResponse`.
 
-Job states:
+### Cancel a running job
+
+The frontend can call:
+
+```http
+POST /api/jobs/{jobId}/cancel
+```
+
+Flow:
+
+1. `RestoreJobCoordinator.requestCancellation(...)` looks up the in-memory job.
+2. It calls `RestoreJobExecutionContext.requestCancellation()`.
+3. That transition is atomic and only succeeds from:
+   - `PENDING`
+   - `RUNNING`
+4. Cancellation is rejected from:
+   - `FINALIZING`
+   - `COMPLETED`
+   - `CANCELLED`
+   - `FAILED`
+
+## Main Runtime Flow
+
+Once the background task starts, the coordinator executes:
+
+1. `context.markRunning()`
+2. `RestoreReplicationLoop.restore(...)`
+3. If the loop returns successfully:
+   - the in-memory job records the `RestoreExecutionResult`
+   - the context transitions `FINALIZING -> COMPLETED`
+4. If cancellation is raised:
+   - the context transitions `CANCELLATION_REQUESTED -> CANCELLED`
+5. If any other runtime failure happens:
+   - the context transitions to `FAILED`
+
+Only one active restore job is allowed at a time.
+
+## What Happens Inside `RestoreReplicationLoop`
+
+`RestoreReplicationLoop` is the core Kafka execution engine.
+
+Its responsibilities are:
+
+- create Kafka consumer and producer instances for the selected pipeline
+- seek the consumer to the correct starting offsets
+- capture a fixed restore boundary using Kafka end offsets
+- poll source records
+- discard records outside the fixed boundary
+- write each non-empty batch transactionally to the target topic
+- commit source offsets through the same Kafka transaction
+- move the job to `FINALIZING` before the final `commitTransaction()`
+
+### Step-by-step loop behavior
+
+#### 1. Resolve pipeline and create Kafka clients
+
+The loop resolves the configured pipeline from `restoreType` and opens:
+
+- a transactional `KafkaProducer<String, byte[]>`
+- a `KafkaConsumer<String, byte[]>`
+
+#### 2. Assign partitions and seek to the starting point
+
+`seekToStartingOffsets(...)` does the following:
+
+- waits for partition assignment
+- if `restoreFromTimestamp` is `null`, seeks to the beginning
+- otherwise calls `offsetsForTimes(...)`
+- if Kafka has no matching offset for a partition, seeks that partition to the beginning
+
+#### 3. Capture a fixed restore boundary
+
+After assignment and seeking, the loop calls:
+
+```java
+consumer.endOffsets(consumer.assignment())
+```
+
+These end offsets are exclusive.
+
+Example:
+
+- end offset `250`
+- last restorable record offset `249`
+
+Records produced to the source topic after this snapshot are intentionally excluded from the current restore run.
+
+#### 4. Handle the zero-record edge case
+
+The loop compares current consumer positions with the captured end offsets.
+
+If all current positions are already at or beyond the boundary:
+
+- the job transitions `RUNNING -> FINALIZING`
+- no Kafka transaction is started
+- an empty `RestoreExecutionResult` is returned
+
+This is the only successful restore path without a transaction, because there are no records to write and no offsets to commit.
+
+#### 5. Poll records
+
+The loop then repeatedly:
+
+1. checks for cancellation
+2. polls Kafka
+3. handles empty polls
+4. filters records that are still inside the restore boundary
+
+Empty polls are not the primary completion signal.
+Normal completion is driven by reaching the fixed end-offset snapshot.
+
+Empty polls are only used as a safety guard so the loop does not wait forever if Kafka behaves unexpectedly.
+
+#### 6. Filter records against the fixed boundary
+
+For every poll batch, records are kept only if:
+
+```java
+record.offset() < restoreEndOffsets.get(topicPartition)
+```
+
+Records at or above the captured boundary are ignored for this run.
+
+#### 7. Restore one batch in one Kafka transaction
+
+For every non-empty restorable batch, `restoreBatch(...)` does:
+
+1. `producer.beginTransaction()`
+2. sequentially send every record to the target topic
+3. calculate the next source offsets
+4. `producer.sendOffsetsToTransaction(...)`
+5. if this is the final batch:
+   - `RUNNING -> FINALIZING`
+6. `producer.commitTransaction()`
+
+If any send, offset submission, or commit fails:
+
+- the loop attempts `abortTransaction()`
+- the batch fails
+- the exception propagates back to the coordinator
+
+#### 8. Detect the final batch
+
+The loop keeps `restoredPositions` per partition.
+
+After calculating batch offsets, it updates positions using the next offset to consume:
+
+```java
+lastProcessedOffset + 1
+```
+
+The batch is final when all restored positions reach the captured end offsets.
+
+That means completion is deterministic and based on Kafka positions, not on timing or poll count.
+
+## Transaction Model
+
+The restore engine uses one Kafka transaction per consumed batch.
+
+Important properties:
+
+- produce path is single-threaded
+- records are sent in order
+- source offsets are committed only through `sendOffsetsToTransaction(...)`
+- target writes and source-offset commits succeed or fail together
+
+This means:
+
+- no partial batch is visible if a failure happens mid-batch
+- no partial batch offset is committed
+- the next run resumes from the last committed source position
+
+The implementation does not wrap the whole restore job in one long Kafka transaction.
+
+## Cancellation Model
+
+Cancellation is cooperative and race-safe.
+
+The critical race is:
+
+- `RUNNING -> CANCELLATION_REQUESTED`
+- `RUNNING -> FINALIZING`
+
+Both are atomic compare-and-set transitions in `RestoreJobExecutionContext`.
+Only one can win.
+
+### If cancellation wins
+
+- the current batch aborts
+- the job becomes `CANCELLED`
+
+### If finalizing wins
+
+- cancellation is rejected
+- the final transaction is allowed to commit
+- the job later becomes `COMPLETED`
+
+There is intentionally no cancellation check after a successful `RUNNING -> FINALIZING` transition.
+
+## Job States
+
+The in-memory lifecycle is:
 
 - `PENDING`
 - `RUNNING`
@@ -87,342 +273,104 @@ Job states:
 - `COMPLETED`
 - `FAILED`
 
-Stored metadata includes:
+Valid transitions:
 
-- job id
-- restore type
-- status
-- requested timestamp
-- restore-from timestamp
-- started timestamp
-- completed timestamp
-- cancellation requested timestamp
-- source topic
-- target topic
-- message type
-- restored record count
-- committed batch count
-- error message
+- `PENDING -> RUNNING`
+- `PENDING -> CANCELLATION_REQUESTED`
+- `RUNNING -> CANCELLATION_REQUESTED`
+- `RUNNING -> FINALIZING`
+- `CANCELLATION_REQUESTED -> CANCELLED`
+- `FINALIZING -> COMPLETED`
+- `PENDING/RUNNING/CANCELLATION_REQUESTED/FINALIZING -> FAILED`
 
-The default local database is H2:
+## Main Classes And Responsibilities
 
-```text
-jdbc:h2:file:./data/restore-engine
+### API layer
+
+- `RestoreJobController`
+  Exposes REST endpoints for starting restores, listing jobs, fetching a job, cancelling a job, and previewing Kafka messages.
+
+### Job orchestration
+
+- `RestoreJobCoordinator`
+  Owns the in-memory job registry, enforces single active job execution, starts background work, handles lifecycle transitions around the replication loop, and serves job responses to the API.
+
+- `RestoreJobExecutionContext`
+  The atomic in-memory lifecycle state machine. It owns only the job id, current status, and cancellation timestamp.
+
+- `InMemoryRestoreJob`
+  The coordinator-owned in-memory snapshot used for API responses. It stores request metadata, timestamps, result data, failure message, and a reference to the execution context.
+
+- `RestoreJobResponse`
+  API-facing DTO built from `InMemoryRestoreJob`.
+
+- `RestoreJobStatus`
+  Enum for the lifecycle states.
+
+- `RestoreJobCancellationException`
+  Signals cooperative cancellation from the loop back to the coordinator.
+
+- `RestoreJobStateException`
+  Signals an invalid lifecycle transition.
+
+### Kafka restore engine
+
+- `RestoreReplicationLoop`
+  Runs the restore itself: seek, boundary capture, polling, filtering, transactional batch commit, final-batch detection, and transaction abort handling.
+
+- `KafkaClientConfiguration`
+  Creates configured Kafka consumers and producers for each restore pipeline.
+
+- `KafkaOffsetCalculator`
+  Computes the next source offsets to commit for the processed records.
+
+- `RestoreExecutionResult`
+  Summary of a completed restore run, including source topic, target topic, batch count, and restored record count.
+
+### Configuration
+
+- `EngineKafkaProperties`
+  Holds Kafka-level settings and the configured `restoreType -> pipeline` mapping.
+
+### Preview support
+
+- `KafkaMessagePreviewService`
+  Supports the preview endpoints for source and target topic inspection.
+
+## Kafka Configuration Requirements
+
+The producer must be configured with:
+
+```properties
+enable.idempotence=true
+acks=all
+transactional.id=<stable restore producer identity>
 ```
 
-The H2 console is available at:
+The consumer must be configured with:
 
-```text
-/h2-console
+```properties
+enable.auto.commit=false
+isolation.level=read_committed
 ```
 
-## Cancellation Semantics
-
-Cancellation is cooperative, not forceful.
-
-The running loop checks for cancellation:
-
-- before polling the next batch
-- before sending each record inside the current batch
-
-If cancellation is requested before a batch commits:
-
-- the current Kafka transaction is aborted
-- no partial batch becomes visible
-- source offsets for that batch are not committed
-- the job transitions to `CANCELLED`
-
-If cancellation is requested after a batch has already committed:
-
-- that committed batch remains valid
-- the loop stops before the next batch
-
-This preserves the exactly-once contract because offsets are still committed only through the Kafka transaction.
-
-Only one active job is allowed at a time. Active job state and cancellation decisions are kept in memory; the database is an audit/logging resource for job lifecycle events and metadata.
-
-The restore request accepts an optional `restoreFromTimestamp` ISO-8601 timestamp:
-
-```json
-{
-  "restoreType": "application",
-  "restoreFromTimestamp": "2026-07-09T10:00:00Z"
-}
-```
-
-When present, Kafka `offsetsForTimes` is used to find the starting offset for each source partition. If Kafka has no offset for the timestamp on a partition, that partition is restored from the beginning. If no timestamp is provided, restoration also starts from the beginning.
-
-## Typed Message Unpacking
-
-The restore loop does not deserialize Kafka messages directly into transformer classes.
-Instead it resolves a dedicated unpacker by `messageType`.
-
-Main classes:
-
-- `serialization/RestoreMessageUnpacker`
-- `serialization/AbstractJsonRestoreMessageUnpacker`
-- `serialization/RestoreMessageUnpackerResolver`
-- `serialization/ApplicationRestoreMessageUnpacker`
-- `serialization/AbuseRestoreMessageUnpacker`
-
-Responsibilities:
-
-- `RestoreMessageUnpacker`
-  Defines the contract for converting raw Kafka `byte[]` payloads into typed objects.
-- `AbstractJsonRestoreMessageUnpacker`
-  Shared Jackson-based implementation for JSON payloads.
-- `RestoreMessageUnpackerResolver`
-  Maps `messageType` to the correct unpacker implementation.
-- `ApplicationRestoreMessageUnpacker`
-  Deserializes application restore messages.
-- `AbuseRestoreMessageUnpacker`
-  Deserializes abuse restore messages.
-
-The current example uses internal-model stand-ins:
-
-- `serialization/model/ApplicationRestoreMessage`
-- `serialization/model/AbuseRestoreMessage`
-
-In the real project, those stand-ins should be replaced by the actual classes from your internal libraries. The unpackers are the seam where that replacement happens cleanly.
-
-## Binary Reference Extraction
-
-Nested binary objects are not discovered by the Kafka loop itself.
-That logic lives in message-type-specific extractors.
-
-Main classes:
-
-- `verification/BinaryReference`
-- `verification/BinaryReferenceExtractor`
-- `verification/BinaryReferenceExtractorResolver`
-- `verification/ApplicationBinaryReferenceExtractor`
-- `verification/AbuseBinaryReferenceExtractor`
-
-Responsibilities:
-
-- `BinaryReference`
-  A normalized description of a binary location to verify. It carries:
-  `fieldPath`, `bucketKey`, `objectKey`, and `checksum`.
-- `BinaryReferenceExtractor`
-  Contract for walking a typed payload and yielding the binary references it contains.
-- `BinaryReferenceExtractorResolver`
-  Resolves the correct extractor from `messageType`.
-- `ApplicationBinaryReferenceExtractor`
-  Knows where application payloads may contain documents such as:
-  `writtenDocument`, `applicant.uploadedFiles`, `translatedFiles`, `signedForm`, `signedLocallyForm`.
-- `AbuseBinaryReferenceExtractor`
-  Knows where abuse payloads may contain documents such as:
-  `uploadedFile` and `attachments`.
-
-This is the clean place to encode knowledge of nested structures from your internal DTOs.
-The core Kafka loop should not know where those fields live.
-
-## Binary Verification
-
-Main classes:
-
-- `verification/BinaryVerificationService`
-- `s3/S3BucketResolver`
-- `s3/S3ClientFactory`
-
-Responsibilities:
-
-- `BinaryVerificationService`
-  Resolves the extractor for the current `messageType`, extracts all binary references from the typed payload, groups S3 access by bucket configuration, and verifies that each referenced object exists.
-- `S3BucketResolver`
-  Maps a logical `bucketKey` to concrete S3 bucket configuration.
-- `S3ClientFactory`
-  Creates S3 clients from configured endpoint, region, credentials, and path-style settings.
-
-The current implementation verifies existence with `HeadObject`.
-Checksum comparison remains a future layer and should be added after the message-specific checksum extraction rules are finalized.
-
-## Why transactions are required
-
-Exactly-once recovery is required because duplicates are not acceptable.
-
-The producer is transactional and must use a stable `transactional.id` across restarts.
-The consumer must use a stable `group.id` across restarts.
-`enable.auto.commit=false` is mandatory.
-Source offsets are committed only with `sendOffsetsToTransaction(...)`.
-The produce path is single-threaded to preserve ordering.
-One Kafka transaction is used per batch.
-The whole restore job must not be wrapped in one Kafka transaction.
-
-If a mid-batch failure happens:
-
-- the batch transaction is aborted
-- no partial batch is committed
-- the next run resumes from the last committed source offsets
-
-All downstream consumers of the target topic must use:
+Target-topic consumers should also use:
 
 ```properties
 isolation.level=read_committed
 ```
 
-Otherwise aborted batches may become visible.
+The restore engine already preserves these assumptions in `KafkaClientConfiguration`.
 
-## Configuration
+## Current Persistence Note
 
-All properties live under `engine.*`.
+The project still contains JPA entities and repository classes from the earlier design, but the current restore flow does not use them as part of job execution.
 
-Main groups:
+Right now:
 
-- `engine.kafka`
-- `engine.s3`
-- `engine.zookeeper`
-- `engine.verification`
+- job lifecycle is in memory
+- job query responses are in memory
+- cancellation is in memory
+- restore completion metadata is in memory
 
-Kafka supports multiple pipelines. Two examples are configured by default:
-
-- `application`
-- `abuse`
-
-Example pipeline properties:
-
-```properties
-engine.kafka.pipelines.application.source-topic=${ENGINE_KAFKA_PIPELINE_APPLICATION_SOURCE_TOPIC:application-restore-source}
-engine.kafka.pipelines.application.target-topic=${ENGINE_KAFKA_PIPELINE_APPLICATION_TARGET_TOPIC:application-restore-target}
-engine.kafka.pipelines.application.group-id=${ENGINE_KAFKA_PIPELINE_APPLICATION_GROUP_ID:application-restore-group}
-engine.kafka.pipelines.application.transactional-id=${ENGINE_KAFKA_PIPELINE_APPLICATION_TRANSACTIONAL_ID:application-restore-tx-producer}
-engine.kafka.pipelines.application.batch-size=${ENGINE_KAFKA_PIPELINE_APPLICATION_BATCH_SIZE:100}
-engine.kafka.pipelines.application.message-type=${ENGINE_KAFKA_PIPELINE_APPLICATION_MESSAGE_TYPE:application}
-```
-
-Kafka security properties are prepared for:
-
-- `PLAINTEXT`
-- `SSL`
-- `SASL_SSL`
-- `SASL_PLAINTEXT`
-
-## Class Responsibilities
-
-Core runtime classes:
-
-- `api/RestoreJobController`
-  REST entrypoints for starting restores, listing jobs, cancelling jobs, and previewing messages.
-- `job/RestoreJobCoordinator`
-  Owns asynchronous job lifecycle, persistence updates, active-job guards, and cooperative cancellation.
-- `kafka/RestoreReplicationLoop`
-  Owns the batch consume-unpack-verify-transform-produce transaction loop.
-- `kafka/RestoreTransformer`
-  Contract for producing target Kafka records from source Kafka records.
-- `kafka/ApplicationRestoreTransformer`
-  Application-specific producer-record mapping.
-- `kafka/AbuseRestoreTransformer`
-  Abuse-specific producer-record mapping.
-- `config/KafkaClientConfiguration`
-  Builds transactional producers, restore consumers, and preview consumers.
-- `config/KafkaSecurityConfigHelper`
-  Applies optional PLAINTEXT, SSL, SASL_SSL, and SASL_PLAINTEXT settings.
-- `job/RestoreJobEntity`
-  Persistent record of job status, timing, and outcome metadata.
-- `job/RunningRestoreJob`
-  In-memory handle for cancellation state of an active background execution.
-- `service/KafkaMessagePreviewService`
-  Reads bounded message samples from source or target topics for the UI.
-- `zookeeper/ZooKeeperCommandProcessorStateRepository`
-  Reserved for post-restore ZooKeeper state updates only, never per batch.
-
-## Local Kafka With Podman
-
-This workspace has `podman` and `podman-compose`, so the repository includes helper scripts for local execution:
-
-Start Kafka and create local example topics:
-
-```bash
-./scripts/podman-up.sh
-```
-
-List topics:
-
-```bash
-./scripts/podman-topics.sh
-```
-
-Stop the stack:
-
-```bash
-./scripts/podman-down.sh
-```
-
-Reset containers and volumes:
-
-```bash
-./scripts/podman-reset.sh
-```
-
-Seed mock restore messages into a source topic:
-
-```bash
-./scripts/seed-mock-messages.sh application-restore-source 250
-```
-
-The compose file uses separate Kafka listeners for:
-
-- host access at `localhost:9092`
-- container-to-container access at `kafka:29092`
-
-That split is required so the topic bootstrap container can connect correctly under Podman.
-
-## Local Kafka With Docker-Compatible Compose
-
-If Docker is available elsewhere, the same compose file can still be used with:
-
-```bash
-docker compose up -d
-```
-
-Topics created by default:
-
-- `topic-a-backup`
-- `topic-b-primary`
-- `application-restore-source`
-- `application-restore-target`
-- `abuse-restore-source`
-- `abuse-restore-target`
-
-## Run the app
-
-```bash
-./mvnw spring-boot:run
-```
-
-## Start a restore
-
-Application restore:
-
-```bash
-curl -X POST http://localhost:8080/api/restores \
-  -H 'Content-Type: application/json' \
-  -d '{"restoreType":"application"}'
-```
-
-Abuse restore:
-
-```bash
-curl -X POST http://localhost:8080/api/restores \
-  -H 'Content-Type: application/json' \
-  -d '{"restoreType":"abuse"}'
-```
-
-## Package layout
-
-```text
-src/main/java/.../restoreengine
-├── api
-├── config
-├── job
-├── kafka
-├── serialization
-├── s3
-├── verification
-└── zookeeper
-```
-
-## Notes
-
-S3 client and bucket resolution are prepared for future binary verification checks.
-ZooKeeper state updates are intentionally separate from Kafka transactions and should happen only after the full restore job finishes.
+If persistent audit/history is reintroduced later, that should be added deliberately around the current coordinator and execution-context design rather than replacing the lifecycle state machine.
