@@ -18,6 +18,8 @@ import com.example.kafkarestorejob.restoreengine.config.KafkaClientConfiguration
 import com.example.kafkarestorejob.restoreengine.kafka.KafkaOffsetCalculator;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreEngineException;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreExecutionResult;
+import com.example.kafkarestorejob.restoreengine.processing.RestoreMessageProcessor;
+import com.example.kafkarestorejob.restoreengine.processing.RestoreMessageProcessorResolver;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -56,6 +58,12 @@ class RestoreReplicationLoopTest {
     @Mock
     private KafkaProducer<String, byte[]> producer;
 
+    @Mock
+    private RestoreMessageProcessorResolver processorResolver;
+
+    @Mock
+    private RestoreMessageProcessor processor;
+
     private RestoreReplicationLoop restoreReplicationLoop;
     private EngineKafkaProperties engineKafkaProperties;
     private EngineKafkaProperties.PipelineProperties pipelineProperties;
@@ -65,7 +73,8 @@ class RestoreReplicationLoopTest {
     void setUp() {
         restoreReplicationLoop = new RestoreReplicationLoop(
                 kafkaClientConfiguration,
-                new KafkaOffsetCalculator()
+                new KafkaOffsetCalculator(),
+                processorResolver
         );
 
         engineKafkaProperties = new EngineKafkaProperties();
@@ -88,6 +97,16 @@ class RestoreReplicationLoopTest {
         when(kafkaClientConfiguration.createProducer(RESTORE_TYPE)).thenReturn(producer);
         when(consumer.assignment()).thenReturn(java.util.Set.of(TOPIC_PARTITION));
         when(consumer.groupMetadata()).thenReturn(groupMetadata);
+        when(processorResolver.resolve("application")).thenReturn(processor);
+        when(processor.transform(eq(TARGET_TOPIC), any())).thenAnswer(invocation -> {
+            ConsumerRecord<String, byte[]> sourceRecord = invocation.getArgument(1);
+            return new ProducerRecord<>(
+                    TARGET_TOPIC,
+                    sourceRecord.partition(),
+                    sourceRecord.key(),
+                    sourceRecord.value()
+            );
+        });
         when(producer.send(any(ProducerRecord.class))).thenAnswer(
                 invocation -> CompletableFuture.completedFuture(null));
     }
@@ -104,6 +123,7 @@ class RestoreReplicationLoopTest {
 
         restoreReplicationLoop.restore(RESTORE_TYPE, null, context);
 
+        verify(processor, times(2)).inspect(eq(RESTORE_TYPE), any());
         verify(producer).beginTransaction();
         verify(producer, times(2)).send(any(ProducerRecord.class));
         verify(producer).sendOffsetsToTransaction(anyMap(), eq(groupMetadata));

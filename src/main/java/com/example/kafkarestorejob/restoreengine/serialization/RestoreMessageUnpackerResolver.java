@@ -22,10 +22,15 @@ public class RestoreMessageUnpackerResolver {
     }
 
     public Object unpack(String messageType, byte[] payload) {
+        RestoreMessageUnpacker<?> unpacker = resolve(messageType);
+        return unpacker.unpack(payload);
+    }
+
+    public RestoreMessageUnpacker<?> resolve(String messageType) {
         RestoreMessageUnpacker<?> unpacker = unpackersByType.get(messageType);
         if (unpacker == null) {
             throw new IllegalArgumentException("No unpacker configured for message type: " + messageType);
         }
-        return unpacker.unpack(payload);
+        return unpacker;
     }
 }

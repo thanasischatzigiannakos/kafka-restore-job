@@ -5,6 +5,8 @@ import com.example.kafkarestorejob.restoreengine.config.KafkaClientConfiguration
 import com.example.kafkarestorejob.restoreengine.kafka.KafkaOffsetCalculator;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreEngineException;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreExecutionResult;
+import com.example.kafkarestorejob.restoreengine.processing.RestoreMessageProcessor;
+import com.example.kafkarestorejob.restoreengine.processing.RestoreMessageProcessorResolver;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -33,13 +35,16 @@ public class RestoreReplicationLoop {
 
     private final KafkaClientConfiguration kafkaClientConfiguration;
     private final KafkaOffsetCalculator offsetCalculator;
+    private final RestoreMessageProcessorResolver processorResolver;
 
     public RestoreReplicationLoop(
             KafkaClientConfiguration kafkaClientConfiguration,
-            KafkaOffsetCalculator offsetCalculator
+            KafkaOffsetCalculator offsetCalculator,
+            RestoreMessageProcessorResolver processorResolver
     ) {
         this.kafkaClientConfiguration = kafkaClientConfiguration;
         this.offsetCalculator = offsetCalculator;
+        this.processorResolver = processorResolver;
     }
 
     public RestoreExecutionResult restore(
@@ -51,6 +56,8 @@ public class RestoreReplicationLoop {
                 kafkaClientConfiguration.requirePipeline(restoreType);
         EngineKafkaProperties engineKafkaProperties =
                 kafkaClientConfiguration.getEngineKafkaProperties();
+        RestoreMessageProcessor processor =
+                processorResolver.resolve(pipeline.getMessageType());
 
         int emptyPolls = 0;
         int committedBatches = 0;
@@ -72,7 +79,7 @@ public class RestoreReplicationLoop {
 
             logRestoreBoundary(context, restoreType, restoreEndOffsets);
 
-            if (isZeroRecordRestore(context, restoreType, restoreEndOffsets, restoredPositions)) {
+            if (isZeroRecordRestore(context, restoreEndOffsets, restoredPositions)) {
                 return createResult(restoreType, pipeline, 0, 0L, 0);
             }
 
@@ -82,10 +89,12 @@ public class RestoreReplicationLoop {
                         consumer,
                         producer,
                         context,
+                        restoreType,
                         pipeline.getTargetTopic(),
                         restoreEndOffsets,
                         engineKafkaProperties,
-                        loopState
+                        loopState,
+                        processor
                 );
 
                 emptyPolls = pollBatchOutcome.emptyPolls();
@@ -117,10 +126,12 @@ public class RestoreReplicationLoop {
             KafkaConsumer<String, byte[]> consumer,
             KafkaProducer<String, byte[]> producer,
             RestoreJobExecutionContext context,
+            String restoreType,
             String targetTopic,
             Map<TopicPartition, Long> restoreEndOffsets,
             EngineKafkaProperties engineKafkaProperties,
-            RestoreLoopState loopState
+            RestoreLoopState loopState,
+            RestoreMessageProcessor processor
     ) {
         context.throwIfCancellationRequested();
         ConsumerRecords<String, byte[]> polledRecords =
@@ -140,10 +151,12 @@ public class RestoreReplicationLoop {
                 consumer,
                 producer,
                 context,
+                restoreType,
                 targetTopic,
                 restoreEndOffsets,
                 loopState,
-                recordsToRestore
+                recordsToRestore,
+                processor
         );
     }
 
@@ -190,10 +203,12 @@ public class RestoreReplicationLoop {
             KafkaConsumer<String, byte[]> consumer,
             KafkaProducer<String, byte[]> producer,
             RestoreJobExecutionContext context,
+            String restoreType,
             String targetTopic,
             Map<TopicPartition, Long> restoreEndOffsets,
             RestoreLoopState loopState,
-            List<ConsumerRecord<String, byte[]>> recordsToRestore
+            List<ConsumerRecord<String, byte[]>> recordsToRestore,
+            RestoreMessageProcessor processor
     ) {
         Map<TopicPartition, OffsetAndMetadata> offsets =
                 offsetCalculator.calculateOffsets(recordsToRestore);
@@ -209,8 +224,10 @@ public class RestoreReplicationLoop {
                 recordsToRestore,
                 offsets,
                 context,
+                restoreType,
                 targetTopic,
-                finalBatch
+                finalBatch,
+                processor
         );
 
         loopState.updateRestoredPositions(nextRestoredPositions);
@@ -235,7 +252,6 @@ public class RestoreReplicationLoop {
 
     private boolean isZeroRecordRestore(
             RestoreJobExecutionContext context,
-            String restoreType,
             Map<TopicPartition, Long> restoreEndOffsets,
             Map<TopicPartition, Long> restoredPositions
     ) {
@@ -311,19 +327,18 @@ public class RestoreReplicationLoop {
             List<ConsumerRecord<String, byte[]>> records,
             Map<TopicPartition, OffsetAndMetadata> offsets,
             RestoreJobExecutionContext context,
+            String restoreType,
             String targetTopic,
-            boolean finalBatch
+            boolean finalBatch,
+            RestoreMessageProcessor processor
     ) {
         producer.beginTransaction();
         try {
             for (ConsumerRecord<String, byte[]> sourceRecord : records) {
                 context.throwIfCancellationRequested();
-
+                processor.inspect(restoreType, sourceRecord.value());
                 ProducerRecord<String, byte[]> targetRecord =
-                        new ProducerRecord<>(
-                                targetTopic,
-                                sourceRecord.key(),
-                                sourceRecord.value());
+                        processor.transform(targetTopic, sourceRecord);
 
                 producer.send(targetRecord).get();
             }
