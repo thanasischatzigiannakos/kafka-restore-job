@@ -5,8 +5,10 @@ import com.example.kafkarestorejob.restoreengine.config.KafkaClientConfiguration
 import com.example.kafkarestorejob.restoreengine.kafka.KafkaOffsetCalculator;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreEngineException;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreExecutionResult;
-import com.example.kafkarestorejob.restoreengine.processing.RestoreMessageProcessor;
-import com.example.kafkarestorejob.restoreengine.processing.RestoreMessageProcessorResolver;
+import com.example.kafkarestorejob.restoreengine.kafka.RestoreTransformer;
+import com.example.kafkarestorejob.restoreengine.kafka.RestoreTransformerResolver;
+import com.example.kafkarestorejob.restoreengine.validation.RestorePayloadValidator;
+import com.example.kafkarestorejob.restoreengine.validation.RestoreRecordValidationContext;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -35,16 +37,19 @@ public class RestoreReplicationLoop {
 
     private final KafkaClientConfiguration kafkaClientConfiguration;
     private final KafkaOffsetCalculator offsetCalculator;
-    private final RestoreMessageProcessorResolver processorResolver;
+    private final RestorePayloadValidator payloadValidator;
+    private final RestoreTransformerResolver transformerResolver;
 
     public RestoreReplicationLoop(
             KafkaClientConfiguration kafkaClientConfiguration,
             KafkaOffsetCalculator offsetCalculator,
-            RestoreMessageProcessorResolver processorResolver
+            RestorePayloadValidator payloadValidator,
+            RestoreTransformerResolver transformerResolver
     ) {
         this.kafkaClientConfiguration = kafkaClientConfiguration;
         this.offsetCalculator = offsetCalculator;
-        this.processorResolver = processorResolver;
+        this.payloadValidator = payloadValidator;
+        this.transformerResolver = transformerResolver;
     }
 
     public RestoreExecutionResult restore(
@@ -56,8 +61,8 @@ public class RestoreReplicationLoop {
                 kafkaClientConfiguration.requirePipeline(restoreType);
         EngineKafkaProperties engineKafkaProperties =
                 kafkaClientConfiguration.getEngineKafkaProperties();
-        RestoreMessageProcessor processor =
-                processorResolver.resolve(pipeline.getMessageType());
+        RestoreTransformer transformer =
+                transformerResolver.resolve(pipeline.getMessageType());
 
         int emptyPolls = 0;
         int committedBatches = 0;
@@ -94,7 +99,8 @@ public class RestoreReplicationLoop {
                         restoreEndOffsets,
                         engineKafkaProperties,
                         loopState,
-                        processor
+                        pipeline.getMessageType(),
+                        transformer
                 );
 
                 emptyPolls = pollBatchOutcome.emptyPolls();
@@ -131,7 +137,8 @@ public class RestoreReplicationLoop {
             Map<TopicPartition, Long> restoreEndOffsets,
             EngineKafkaProperties engineKafkaProperties,
             RestoreLoopState loopState,
-            RestoreMessageProcessor processor
+            String configuredMessageType,
+            RestoreTransformer transformer
     ) {
         context.throwIfCancellationRequested();
         ConsumerRecords<String, byte[]> polledRecords =
@@ -156,7 +163,8 @@ public class RestoreReplicationLoop {
                 restoreEndOffsets,
                 loopState,
                 recordsToRestore,
-                processor
+                configuredMessageType,
+                transformer
         );
     }
 
@@ -208,7 +216,8 @@ public class RestoreReplicationLoop {
             Map<TopicPartition, Long> restoreEndOffsets,
             RestoreLoopState loopState,
             List<ConsumerRecord<String, byte[]>> recordsToRestore,
-            RestoreMessageProcessor processor
+            String configuredMessageType,
+            RestoreTransformer transformer
     ) {
         Map<TopicPartition, OffsetAndMetadata> offsets =
                 offsetCalculator.calculateOffsets(recordsToRestore);
@@ -227,7 +236,8 @@ public class RestoreReplicationLoop {
                 restoreType,
                 targetTopic,
                 finalBatch,
-                processor
+                configuredMessageType,
+                transformer
         );
 
         loopState.updateRestoredPositions(nextRestoredPositions);
@@ -330,15 +340,26 @@ public class RestoreReplicationLoop {
             String restoreType,
             String targetTopic,
             boolean finalBatch,
-            RestoreMessageProcessor processor
+            String configuredMessageType,
+            RestoreTransformer transformer
     ) {
         producer.beginTransaction();
         try {
             for (ConsumerRecord<String, byte[]> sourceRecord : records) {
                 context.throwIfCancellationRequested();
-                processor.inspect(restoreType, sourceRecord.value());
+                payloadValidator.validate(
+                        configuredMessageType,
+                        new RestoreRecordValidationContext(
+                                context.getJobId(),
+                                restoreType,
+                                sourceRecord.topic(),
+                                sourceRecord.partition(),
+                                sourceRecord.offset()
+                        ),
+                        sourceRecord.value()
+                );
                 ProducerRecord<String, byte[]> targetRecord =
-                        processor.transform(targetTopic, sourceRecord);
+                        transformer.transform(targetTopic, sourceRecord);
 
                 producer.send(targetRecord).get();
             }

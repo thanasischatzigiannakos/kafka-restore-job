@@ -3,15 +3,11 @@ package com.example.kafkarestorejob.restoreengine.verification;
 import com.example.kafkarestorejob.restoreengine.serialization.model.AbuseRestoreMessage;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import org.springframework.stereotype.Component;
 
 @Component
-public class AbuseBinaryReferenceExtractor implements BinaryReferenceExtractor<AbuseRestoreMessage> {
-
-    @Override
-    public String messageType() {
-        return "abuse";
-    }
+public class AbuseBinaryReferenceExtractor implements FileReferenceExtractor<AbuseRestoreMessage> {
 
     @Override
     public Class<AbuseRestoreMessage> payloadClass() {
@@ -45,7 +41,9 @@ public class AbuseBinaryReferenceExtractor implements BinaryReferenceExtractor<A
                 fieldPath,
                 file.getBucketKey(),
                 file.getObjectKey(),
-                file.getChecksum()
+                Optional.empty(),
+                Optional.ofNullable(file.getChecksum()),
+                BinaryReferencePurpose.REQUIRED_CONTENT
         ));
     }
 }

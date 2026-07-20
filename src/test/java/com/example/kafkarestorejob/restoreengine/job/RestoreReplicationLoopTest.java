@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -18,8 +19,9 @@ import com.example.kafkarestorejob.restoreengine.config.KafkaClientConfiguration
 import com.example.kafkarestorejob.restoreengine.kafka.KafkaOffsetCalculator;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreEngineException;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreExecutionResult;
-import com.example.kafkarestorejob.restoreengine.processing.RestoreMessageProcessor;
-import com.example.kafkarestorejob.restoreengine.processing.RestoreMessageProcessorResolver;
+import com.example.kafkarestorejob.restoreengine.kafka.RestoreTransformer;
+import com.example.kafkarestorejob.restoreengine.kafka.RestoreTransformerResolver;
+import com.example.kafkarestorejob.restoreengine.validation.RestorePayloadValidator;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -38,6 +40,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -59,10 +62,13 @@ class RestoreReplicationLoopTest {
     private KafkaProducer<String, byte[]> producer;
 
     @Mock
-    private RestoreMessageProcessorResolver processorResolver;
+    private RestorePayloadValidator payloadValidator;
 
     @Mock
-    private RestoreMessageProcessor processor;
+    private RestoreTransformerResolver transformerResolver;
+
+    @Mock
+    private RestoreTransformer transformer;
 
     private RestoreReplicationLoop restoreReplicationLoop;
     private EngineKafkaProperties engineKafkaProperties;
@@ -74,7 +80,8 @@ class RestoreReplicationLoopTest {
         restoreReplicationLoop = new RestoreReplicationLoop(
                 kafkaClientConfiguration,
                 new KafkaOffsetCalculator(),
-                processorResolver
+                payloadValidator,
+                transformerResolver
         );
 
         engineKafkaProperties = new EngineKafkaProperties();
@@ -97,8 +104,8 @@ class RestoreReplicationLoopTest {
         when(kafkaClientConfiguration.createProducer(RESTORE_TYPE)).thenReturn(producer);
         when(consumer.assignment()).thenReturn(java.util.Set.of(TOPIC_PARTITION));
         when(consumer.groupMetadata()).thenReturn(groupMetadata);
-        when(processorResolver.resolve("application")).thenReturn(processor);
-        when(processor.transform(eq(TARGET_TOPIC), any())).thenAnswer(invocation -> {
+        when(transformerResolver.resolve("application")).thenReturn(transformer);
+        when(transformer.transform(eq(TARGET_TOPIC), any())).thenAnswer(invocation -> {
             ConsumerRecord<String, byte[]> sourceRecord = invocation.getArgument(1);
             return new ProducerRecord<>(
                     TARGET_TOPIC,
@@ -123,11 +130,35 @@ class RestoreReplicationLoopTest {
 
         restoreReplicationLoop.restore(RESTORE_TYPE, null, context);
 
-        verify(processor, times(2)).inspect(eq(RESTORE_TYPE), any());
+        verify(payloadValidator, times(2)).validate(eq("application"), any(), any());
         verify(producer).beginTransaction();
         verify(producer, times(2)).send(any(ProducerRecord.class));
         verify(producer).sendOffsetsToTransaction(anyMap(), eq(groupMetadata));
         verify(producer).commitTransaction();
+    }
+
+    @Test
+    void validatesAndSendsInTransactionalOrder() {
+        RestoreJobExecutionContext context = runningContext();
+        when(consumer.poll(any(Duration.class))).thenReturn(
+                ConsumerRecords.empty(),
+                records(record(0L), record(1L))
+        );
+        when(consumer.position(TOPIC_PARTITION)).thenReturn(0L);
+        when(consumer.endOffsets(java.util.Set.of(TOPIC_PARTITION))).thenReturn(Map.of(TOPIC_PARTITION, 2L));
+
+        restoreReplicationLoop.restore(RESTORE_TYPE, null, context);
+
+        InOrder inOrder = inOrder(producer, payloadValidator, transformer);
+        inOrder.verify(producer).beginTransaction();
+        inOrder.verify(payloadValidator).validate(eq("application"), any(), any());
+        inOrder.verify(transformer).transform(eq(TARGET_TOPIC), any());
+        inOrder.verify(producer).send(any(ProducerRecord.class));
+        inOrder.verify(payloadValidator).validate(eq("application"), any(), any());
+        inOrder.verify(transformer).transform(eq(TARGET_TOPIC), any());
+        inOrder.verify(producer).send(any(ProducerRecord.class));
+        inOrder.verify(producer).sendOffsetsToTransaction(anyMap(), eq(groupMetadata));
+        inOrder.verify(producer).commitTransaction();
     }
 
     @Test
@@ -166,6 +197,30 @@ class RestoreReplicationLoopTest {
 
         verify(producer).abortTransaction();
         verify(producer, never()).sendOffsetsToTransaction(anyMap(), any());
+    }
+
+    @Test
+    void abortsTransactionWhenValidationFailsBeforeSend() {
+        RestoreJobExecutionContext context = runningContext();
+        doThrow(new RuntimeException("validation failed")).when(payloadValidator)
+                .validate(eq("application"), any(), any());
+        when(consumer.poll(any(Duration.class))).thenReturn(
+                ConsumerRecords.empty(),
+                records(record(0L), record(1L))
+        );
+        when(consumer.position(TOPIC_PARTITION)).thenReturn(0L);
+        when(consumer.endOffsets(java.util.Set.of(TOPIC_PARTITION))).thenReturn(Map.of(TOPIC_PARTITION, 2L));
+
+        assertThrows(RestoreEngineException.class,
+                () -> restoreReplicationLoop.restore(RESTORE_TYPE, null, context));
+
+        InOrder inOrder = inOrder(producer, payloadValidator);
+        inOrder.verify(producer).beginTransaction();
+        inOrder.verify(payloadValidator).validate(eq("application"), any(), any());
+        inOrder.verify(producer).abortTransaction();
+        verify(producer, never()).send(any(ProducerRecord.class));
+        verify(producer, never()).sendOffsetsToTransaction(anyMap(), any());
+        verify(producer, never()).commitTransaction();
     }
 
     @Test

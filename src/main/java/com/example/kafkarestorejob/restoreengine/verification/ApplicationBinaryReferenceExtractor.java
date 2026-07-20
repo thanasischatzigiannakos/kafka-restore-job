@@ -3,15 +3,11 @@ package com.example.kafkarestorejob.restoreengine.verification;
 import com.example.kafkarestorejob.restoreengine.serialization.model.ApplicationRestoreMessage;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import org.springframework.stereotype.Component;
 
 @Component
-public class ApplicationBinaryReferenceExtractor implements BinaryReferenceExtractor<ApplicationRestoreMessage> {
-
-    @Override
-    public String messageType() {
-        return "application";
-    }
+public class ApplicationBinaryReferenceExtractor implements FileReferenceExtractor<ApplicationRestoreMessage> {
 
     @Override
     public Class<ApplicationRestoreMessage> payloadClass() {
@@ -57,7 +53,9 @@ public class ApplicationBinaryReferenceExtractor implements BinaryReferenceExtra
                 fieldPath,
                 document.getBucketKey(),
                 document.getObjectKey(),
-                document.getChecksum()
+                Optional.empty(),
+                Optional.ofNullable(document.getChecksum()),
+                BinaryReferencePurpose.REQUIRED_CONTENT
         ));
     }
 }
