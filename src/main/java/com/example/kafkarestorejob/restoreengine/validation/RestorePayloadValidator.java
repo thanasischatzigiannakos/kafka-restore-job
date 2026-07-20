@@ -2,27 +2,26 @@ package com.example.kafkarestorejob.restoreengine.validation;
 
 import com.example.kafkarestorejob.restoreengine.serialization.MessageUnpackingException;
 import com.example.kafkarestorejob.restoreengine.serialization.RestoreMessageUnpackerResolver;
-import com.example.kafkarestorejob.restoreengine.verification.FileReferenceExtractorRegistry;
 import org.springframework.stereotype.Component;
 
 @Component
 public class RestorePayloadValidator {
 
     private final ExpectedPayloadTypeResolver typeResolver;
-    private final FileReferenceExtractorRegistry extractorRegistry;
+    private final FileCapablePayloadRegistry fileCapablePayloadRegistry;
+    private final ExpectedMessageTypeCheckerRegistry checkerRegistry;
     private final RestoreMessageUnpackerResolver unpackerResolver;
-    private final RestoreValidationMetrics metrics;
 
     public RestorePayloadValidator(
             ExpectedPayloadTypeResolver typeResolver,
-            FileReferenceExtractorRegistry extractorRegistry,
-            RestoreMessageUnpackerResolver unpackerResolver,
-            RestoreValidationMetrics metrics
+            FileCapablePayloadRegistry fileCapablePayloadRegistry,
+            ExpectedMessageTypeCheckerRegistry checkerRegistry,
+            RestoreMessageUnpackerResolver unpackerResolver
     ) {
         this.typeResolver = typeResolver;
-        this.extractorRegistry = extractorRegistry;
+        this.fileCapablePayloadRegistry = fileCapablePayloadRegistry;
+        this.checkerRegistry = checkerRegistry;
         this.unpackerResolver = unpackerResolver;
-        this.metrics = metrics;
     }
 
     public void validate(
@@ -31,25 +30,12 @@ public class RestorePayloadValidator {
             byte[] payloadBytes
     ) {
         Class<?> expectedClass = typeResolver.resolve(configuredMessageType);
-        String expectedPayloadClass = expectedClass.getSimpleName();
-        metrics.increment(
-                "restore_payload_type_checks_total",
-                context.restoreType(),
-                configuredMessageType,
-                expectedPayloadClass
-        );
-
-        if (!extractorRegistry.supports(expectedClass)) {
+        if (!fileCapablePayloadRegistry.supports(expectedClass)) {
+            checkerRegistry.requireChecker(configuredMessageType).validate(context, payloadBytes);
             return;
         }
 
-        Object unpackedPayload = unpackPayload(configuredMessageType, context, payloadBytes);
-        metrics.increment(
-                "restore_payload_unpacks_total",
-                context.restoreType(),
-                configuredMessageType,
-                expectedPayloadClass
-        );
+        unpackPayload(configuredMessageType, context, payloadBytes);
     }
 
     private Object unpackPayload(

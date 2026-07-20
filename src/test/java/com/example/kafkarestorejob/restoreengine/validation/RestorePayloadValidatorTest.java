@@ -9,7 +9,6 @@ import static org.mockito.Mockito.when;
 
 import com.example.kafkarestorejob.restoreengine.serialization.MessageUnpackingException;
 import com.example.kafkarestorejob.restoreengine.serialization.RestoreMessageUnpackerResolver;
-import com.example.kafkarestorejob.restoreengine.verification.FileReferenceExtractorRegistry;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -24,7 +23,10 @@ class RestorePayloadValidatorTest {
     private ExpectedPayloadTypeResolver typeResolver;
 
     @Mock
-    private FileReferenceExtractorRegistry extractorRegistry;
+    private FileCapablePayloadRegistry fileCapablePayloadRegistry;
+
+    @Mock
+    private ExpectedMessageTypeCheckerRegistry checkerRegistry;
 
     @Mock
     private RestoreMessageUnpackerResolver unpackerResolver;
@@ -36,9 +38,9 @@ class RestorePayloadValidatorTest {
     void setUp() {
         validator = new RestorePayloadValidator(
                 typeResolver,
-                extractorRegistry,
-                unpackerResolver,
-                new RestoreValidationMetrics()
+                fileCapablePayloadRegistry,
+                checkerRegistry,
+                unpackerResolver
         );
         context = new RestoreRecordValidationContext(
                 UUID.randomUUID(),
@@ -52,30 +54,32 @@ class RestorePayloadValidatorTest {
     @Test
     void typeOnlyValidationDoesNotUnpack() {
         when(typeResolver.resolve("type-only")).thenReturn(String.class);
-        when(extractorRegistry.supports(String.class)).thenReturn(false);
+        when(fileCapablePayloadRegistry.supports(String.class)).thenReturn(false);
+        when(checkerRegistry.requireChecker("type-only")).thenReturn((validationContext, payloadBytes) -> {
+        });
 
         validator.validate("type-only", context, "{\"value\":1}".getBytes());
 
-        verify(extractorRegistry, never()).extract(any(), any());
+        verify(checkerRegistry).requireChecker("type-only");
         verify(unpackerResolver, never()).unpack(any(), any());
     }
 
     @Test
     void fileCapableValidationUnpacksOnceWithoutFurtherValidation() {
         when(typeResolver.resolve("file-type")).thenReturn(TestPayload.class);
-        when(extractorRegistry.supports(TestPayload.class)).thenReturn(true);
+        when(fileCapablePayloadRegistry.supports(TestPayload.class)).thenReturn(true);
         when(unpackerResolver.unpack(eq("file-type"), any())).thenReturn(new TestPayload());
 
         validator.validate("file-type", context, "{\"value\":1}".getBytes());
 
         verify(unpackerResolver).unpack(eq("file-type"), any());
-        verify(extractorRegistry, never()).extract(eq(TestPayload.class), any());
+        verify(checkerRegistry, never()).requireChecker("file-type");
     }
 
     @Test
     void unpackingFailureIsWrapped() {
         when(typeResolver.resolve("file-type")).thenReturn(TestPayload.class);
-        when(extractorRegistry.supports(TestPayload.class)).thenReturn(true);
+        when(fileCapablePayloadRegistry.supports(TestPayload.class)).thenReturn(true);
         when(unpackerResolver.unpack(eq("file-type"), any()))
                 .thenThrow(new MessageUnpackingException("bad payload", new RuntimeException("boom")));
 

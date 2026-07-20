@@ -20,6 +20,69 @@ The main goals of the runtime design are:
 - safe cancellation while the job is still `RUNNING`
 - deterministic completion based on a fixed Kafka end-offset snapshot
 
+## Message Validation Approach
+
+Before a consumed record is sent to the target topic, the restore loop validates it against the configured pipeline `messageType`.
+
+The current implementation supports two validation paths:
+
+- file-capable message types
+  These are message types whose payloads may contain file-related data and therefore must be unpacked before the record is forwarded.
+- type-check-only message types
+  These are message types that do not use the file-capable path. They are validated by a dedicated checker for that configured message type.
+
+The distinction is explicit.
+
+- `application` and `abuse` are registered as file-capable payload classes.
+- `notification` is the example type-check-only message type.
+
+### Current supporting classes
+
+- `ConfiguredPayloadTypeResolver`
+  Maps configured pipeline `messageType` values such as `application`, `abuse`, and `notification` to the Java payload class used for JSON unpacking.
+
+- `FileCapablePayloadRegistry`
+  Holds the explicit set of payload classes that should be unpacked on the restore path because they may contain file-related content.
+
+- `ExpectedMessageTypeCheckerRegistry`
+  Holds the explicit set of type-check-only validators keyed by configured `messageType`.
+
+- `RestorePayloadValidator`
+  Chooses which validation path to use for each consumed record.
+
+### Validation flow
+
+For every consumed Kafka record, the loop now follows this path:
+
+```text
+read configured pipeline.messageType
+    ↓
+resolve expected payload class
+    ↓
+is the payload class registered as file-capable?
+    ├── yes → unpack JSON payload into the expected class
+    └── no  → run the configured message-type checker
+```
+
+This version intentionally stops at unpacking or type checking.
+It does not perform S3 lookups, checksum checks, or binary completeness validation.
+
+### Example type-only message
+
+The repository includes an example non-file-bearing message:
+
+- `notification`
+
+It uses:
+
+- `NotificationRestoreMessage`
+- `NotificationRestoreMessageUnpacker`
+- `NotificationExpectedMessageTypeChecker`
+- `NotificationRestoreTransformer`
+
+The checker unpacks the message and verifies that `entityType == "notification"`.
+That makes the type-only branch concrete instead of being a no-op.
+
 ## Request Flow
 
 ### Start restore
@@ -190,18 +253,26 @@ Records at or above the captured boundary are ignored for this run.
 For every non-empty restorable batch, `restoreBatch(...)` does:
 
 1. `producer.beginTransaction()`
-2. sequentially send every record to the target topic
-3. calculate the next source offsets
-4. `producer.sendOffsetsToTransaction(...)`
-5. if this is the final batch:
+2. validate the source record payload using the configured `messageType`
+3. sequentially send every record to the target topic
+4. calculate the next source offsets
+5. `producer.sendOffsetsToTransaction(...)`
+6. if this is the final batch:
    - `RUNNING -> FINALIZING`
-6. `producer.commitTransaction()`
+7. `producer.commitTransaction()`
 
 If any send, offset submission, or commit fails:
 
 - the loop attempts `abortTransaction()`
 - the batch fails
 - the exception propagates back to the coordinator
+
+If payload validation fails:
+
+- the current transaction is aborted
+- the failing record is not sent
+- later records in the batch are not processed
+- source offsets are not committed
 
 #### 8. Detect the final batch
 
@@ -316,7 +387,7 @@ Valid transitions:
 ### Kafka restore engine
 
 - `RestoreReplicationLoop`
-  Runs the restore itself: seek, boundary capture, polling, filtering, transactional batch commit, final-batch detection, and transaction abort handling.
+  Runs the restore itself: seek, boundary capture, polling, per-record payload validation, filtering, transactional batch commit, final-batch detection, and transaction abort handling.
 
 - `KafkaClientConfiguration`
   Creates configured Kafka consumers and producers for each restore pipeline.
@@ -327,10 +398,30 @@ Valid transitions:
 - `RestoreExecutionResult`
   Summary of a completed restore run, including source topic, target topic, batch count, and restored record count.
 
+- `RestorePayloadValidator`
+  Selects the validation path for each record and performs either file-capable unpacking or configured type-only checking.
+
+- `ConfiguredPayloadTypeResolver`
+  Resolves the configured pipeline `messageType` to the Java payload class.
+
+- `FileCapablePayloadRegistry`
+  Declares which payload classes should be unpacked on the restore path.
+
+- `ExpectedMessageTypeCheckerRegistry`
+  Declares which non-file-bearing message types use explicit type-check logic.
+
 ### Configuration
 
 - `EngineKafkaProperties`
   Holds Kafka-level settings and the configured `restoreType -> pipeline` mapping.
+
+The default example pipelines are:
+
+- `application`
+- `abuse`
+- `notification`
+
+The `notification` pipeline is included as the example type-check-only path.
 
 ### Preview support
 
