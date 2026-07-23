@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
@@ -98,13 +99,12 @@ class RestoreReplicationLoopTest {
 
         groupMetadata = new ConsumerGroupMetadata("restore-group");
 
-        when(kafkaClientConfiguration.requirePipeline(RESTORE_TYPE)).thenReturn(pipelineProperties);
         when(kafkaClientConfiguration.getEngineKafkaProperties()).thenReturn(engineKafkaProperties);
-        when(kafkaClientConfiguration.createConsumer(RESTORE_TYPE)).thenReturn(consumer);
-        when(kafkaClientConfiguration.createProducer(RESTORE_TYPE)).thenReturn(producer);
+        when(kafkaClientConfiguration.createConsumer(anyString())).thenReturn(consumer);
+        when(kafkaClientConfiguration.createProducer(anyString())).thenReturn(producer);
         when(consumer.assignment()).thenReturn(java.util.Set.of(TOPIC_PARTITION));
         when(consumer.groupMetadata()).thenReturn(groupMetadata);
-        when(transformerResolver.resolve("application")).thenReturn(transformer);
+        when(transformerResolver.resolve(anyString())).thenReturn(transformer);
         when(transformer.transform(eq(TARGET_TOPIC), any())).thenAnswer(invocation -> {
             ConsumerRecord<String, byte[]> sourceRecord = invocation.getArgument(1);
             return new ProducerRecord<>(
