@@ -4,16 +4,17 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 import com.example.kafkarestorejob.restoreengine.config.EngineKafkaProperties;
 import com.example.kafkarestorejob.restoreengine.config.KafkaClientConfiguration;
@@ -99,13 +100,13 @@ class RestoreReplicationLoopTest {
 
         groupMetadata = new ConsumerGroupMetadata("restore-group");
 
-        when(kafkaClientConfiguration.getEngineKafkaProperties()).thenReturn(engineKafkaProperties);
-        when(kafkaClientConfiguration.createConsumer(nullable(String.class))).thenReturn(consumer);
-        when(kafkaClientConfiguration.createProducer(nullable(String.class))).thenReturn(producer);
-        when(consumer.assignment()).thenReturn(java.util.Set.of(TOPIC_PARTITION));
-        when(consumer.groupMetadata()).thenReturn(groupMetadata);
-        when(transformerResolver.resolve(nullable(String.class))).thenReturn(transformer);
-        when(transformer.transform(eq(TARGET_TOPIC), any())).thenAnswer(invocation -> {
+        lenient().when(kafkaClientConfiguration.getEngineKafkaProperties()).thenReturn(engineKafkaProperties);
+        lenient().when(kafkaClientConfiguration.createConsumer(nullable(String.class))).thenReturn(consumer);
+        lenient().when(kafkaClientConfiguration.createProducer(nullable(String.class))).thenReturn(producer);
+        lenient().when(consumer.assignment()).thenReturn(java.util.Set.of(TOPIC_PARTITION));
+        lenient().when(consumer.groupMetadata()).thenReturn(groupMetadata);
+        lenient().when(transformerResolver.resolve(nullable(String.class))).thenReturn(transformer);
+        lenient().when(transformer.transform(eq(TARGET_TOPIC), any())).thenAnswer(invocation -> {
             ConsumerRecord<String, byte[]> sourceRecord = invocation.getArgument(1);
             return new ProducerRecord<>(
                     TARGET_TOPIC,
@@ -114,7 +115,7 @@ class RestoreReplicationLoopTest {
                     sourceRecord.value()
             );
         });
-        when(producer.send(any(ProducerRecord.class))).thenAnswer(
+        lenient().when(producer.send(any(ProducerRecord.class))).thenAnswer(
                 invocation -> CompletableFuture.completedFuture(null));
     }
 
@@ -390,6 +391,42 @@ class RestoreReplicationLoopTest {
         verify(producer, times(2)).beginTransaction();
         assertEquals(2, result.batchesCommitted());
         assertEquals(3L, result.recordsRestored());
+    }
+
+    @Test
+    void resumeStartsFromCommittedOffsetsWhenTheyExist() {
+        RestoreJobExecutionContext context = runningContext();
+        when(consumer.poll(any(Duration.class))).thenReturn(ConsumerRecords.empty());
+        when(consumer.committed(java.util.Set.of(TOPIC_PARTITION)))
+                .thenReturn(Map.of(TOPIC_PARTITION, new OffsetAndMetadata(7L)));
+        when(consumer.position(TOPIC_PARTITION)).thenReturn(7L);
+        when(consumer.endOffsets(java.util.Set.of(TOPIC_PARTITION))).thenReturn(Map.of(TOPIC_PARTITION, 7L));
+
+        RestoreExecutionResult result =
+                restoreReplicationLoop.resume(RESTORE_TYPE, pipelineProperties, null, context);
+
+        verify(consumer).committed(java.util.Set.of(TOPIC_PARTITION));
+        verify(consumer).seek(TOPIC_PARTITION, 7L);
+        verify(consumer, never()).seekToBeginning(java.util.Set.of(TOPIC_PARTITION));
+        assertEquals(0L, result.recordsRestored());
+    }
+
+    @Test
+    void resumeFallsBackToBeginningWhenCommittedOffsetsDoNotExist() {
+        RestoreJobExecutionContext context = runningContext();
+        when(consumer.poll(any(Duration.class))).thenReturn(ConsumerRecords.empty());
+        java.util.Map<TopicPartition, OffsetAndMetadata> committedOffsets = new java.util.HashMap<>();
+        committedOffsets.put(TOPIC_PARTITION, null);
+        when(consumer.committed(java.util.Set.of(TOPIC_PARTITION)))
+                .thenReturn(committedOffsets);
+        when(consumer.position(TOPIC_PARTITION)).thenReturn(0L);
+        when(consumer.endOffsets(java.util.Set.of(TOPIC_PARTITION))).thenReturn(Map.of(TOPIC_PARTITION, 0L));
+
+        restoreReplicationLoop.resume(RESTORE_TYPE, pipelineProperties, null, context);
+
+        verify(consumer).committed(java.util.Set.of(TOPIC_PARTITION));
+        verify(consumer).seekToBeginning(java.util.List.of(TOPIC_PARTITION));
+        verify(consumer, never()).seek(eq(TOPIC_PARTITION), anyLong());
     }
 
     private RestoreJobExecutionContext runningContext() {

@@ -58,6 +58,37 @@ public class RestoreReplicationLoop {
             Instant restoreFromTimestamp,
             RestoreJobExecutionContext context
     ) {
+        return restoreInternal(
+                restoreType,
+                pipeline,
+                restoreFromTimestamp,
+                context,
+                false
+        );
+    }
+
+    public RestoreExecutionResult resume(
+            String restoreType,
+            EngineKafkaProperties.PipelineProperties pipeline,
+            Instant restoreFromTimestamp,
+            RestoreJobExecutionContext context
+    ) {
+        return restoreInternal(
+                restoreType,
+                pipeline,
+                restoreFromTimestamp,
+                context,
+                true
+        );
+    }
+
+    private RestoreExecutionResult restoreInternal(
+            String restoreType,
+            EngineKafkaProperties.PipelineProperties pipeline,
+            Instant restoreFromTimestamp,
+            RestoreJobExecutionContext context,
+            boolean resumeFromCommittedOffsets
+    ) {
         EngineKafkaProperties engineKafkaProperties =
                 kafkaClientConfiguration.getEngineKafkaProperties();
         RestoreTransformer transformer =
@@ -74,8 +105,13 @@ public class RestoreReplicationLoop {
                 kafkaClientConfiguration.createProducer(restoreType)
         ) {
             consumer.subscribe(List.of(pipeline.getSourceTopic()));
-            seekToStartingOffsets(consumer, pipeline.getSourceTopic(), restoreFromTimestamp,
-                    engineKafkaProperties.getPollTimeout());
+            seekToStartingOffsets(
+                    consumer,
+                    pipeline.getSourceTopic(),
+                    restoreFromTimestamp,
+                    engineKafkaProperties.getPollTimeout(),
+                    resumeFromCommittedOffsets
+            );
 
             Map<TopicPartition, Long> restoreEndOffsets = captureEndOffsets(consumer);
             Map<TopicPartition, Long> restoredPositions =
@@ -386,23 +422,71 @@ public class RestoreReplicationLoop {
             KafkaConsumer<String, byte[]> consumer,
             String sourceTopic,
             Instant restoreFromTimestamp,
-            Duration assignmentPollTimeout
+            Duration assignmentPollTimeout,
+            boolean resumeFromCommittedOffsets
     ) {
         Set<TopicPartition> assignment = awaitAssignment(consumer, assignmentPollTimeout);
+        if (resumeFromCommittedOffsets) {
+            Map<TopicPartition, OffsetAndMetadata> committedOffsets = consumer.committed(assignment);
+            List<TopicPartition> partitionsWithoutCommittedOffsets = new ArrayList<>();
+            for (TopicPartition topicPartition : assignment) {
+                OffsetAndMetadata committedOffset = committedOffsets.get(topicPartition);
+                if (committedOffset == null) {
+                    partitionsWithoutCommittedOffsets.add(topicPartition);
+                    continue;
+                }
+
+                consumer.seek(topicPartition, committedOffset.offset());
+                log.info(
+                        "Restore resumes at committed offset={} for sourceTopic={} partition={}",
+                        committedOffset.offset(),
+                        sourceTopic,
+                        topicPartition.partition()
+                );
+            }
+
+            if (partitionsWithoutCommittedOffsets.isEmpty()) {
+                return;
+            }
+
+            seekPartitionsWithoutCommittedOffsets(
+                    consumer,
+                    sourceTopic,
+                    restoreFromTimestamp,
+                    partitionsWithoutCommittedOffsets
+            );
+            return;
+        }
+
+        seekPartitionsWithoutCommittedOffsets(
+                consumer,
+                sourceTopic,
+                restoreFromTimestamp,
+                assignment
+        );
+    }
+
+    private void seekPartitionsWithoutCommittedOffsets(
+            KafkaConsumer<String, byte[]> consumer,
+            String sourceTopic,
+            Instant restoreFromTimestamp,
+            Iterable<TopicPartition> partitions
+    ) {
         if (restoreFromTimestamp == null) {
-            consumer.seekToBeginning(assignment);
+            List<TopicPartition> partitionsToSeek = toPartitionList(partitions);
+            consumer.seekToBeginning(partitionsToSeek);
             log.info("Restore starts at beginning for sourceTopic={}", sourceTopic);
             return;
         }
 
         Map<TopicPartition, Long> timestampsToSearch = new HashMap<>();
-        for (TopicPartition topicPartition : assignment) {
+        for (TopicPartition topicPartition : partitions) {
             timestampsToSearch.put(topicPartition, restoreFromTimestamp.toEpochMilli());
         }
 
         Map<TopicPartition, OffsetAndTimestamp> offsetsForTimes =
                 consumer.offsetsForTimes(timestampsToSearch);
-        for (TopicPartition topicPartition : assignment) {
+        for (TopicPartition topicPartition : timestampsToSearch.keySet()) {
             OffsetAndTimestamp offsetAndTimestamp = offsetsForTimes.get(topicPartition);
             if (offsetAndTimestamp == null) {
                 consumer.seekToBeginning(List.of(topicPartition));
@@ -423,6 +507,14 @@ public class RestoreReplicationLoop {
                 );
             }
         }
+    }
+
+    private List<TopicPartition> toPartitionList(Iterable<TopicPartition> partitions) {
+        List<TopicPartition> partitionList = new ArrayList<>();
+        for (TopicPartition partition : partitions) {
+            partitionList.add(partition);
+        }
+        return partitionList;
     }
 
     private Set<TopicPartition> awaitAssignment(
