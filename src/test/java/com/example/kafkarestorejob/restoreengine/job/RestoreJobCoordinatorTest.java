@@ -31,6 +31,7 @@ class RestoreJobCoordinatorTest {
     private ThreadPoolTaskExecutor restoreJobExecutor;
 
     private RestoreJobCoordinator coordinator;
+    private EngineKafkaProperties.PipelineProperties pipelineProperties;
 
     @BeforeEach
     void setUp() {
@@ -39,6 +40,10 @@ class RestoreJobCoordinatorTest {
                 engineKafkaProperties,
                 restoreJobExecutor
         );
+        pipelineProperties = new EngineKafkaProperties.PipelineProperties();
+        pipelineProperties.setMessageType("application");
+        pipelineProperties.setSourceTopic("source-topic");
+        pipelineProperties.setTargetTopic("target-topic");
     }
 
     @Test
@@ -48,7 +53,8 @@ class RestoreJobCoordinatorTest {
         RestoreJobExecutionContext context = job.getContext();
         addRunningJob(jobId, job);
         RestoreExecutionResult result = result();
-        when(restoreReplicationLoop.restore("application", null, context)).thenAnswer(invocation -> {
+        when(engineKafkaProperties.requirePipeline("application")).thenReturn(pipelineProperties);
+        when(restoreReplicationLoop.restore("application", pipelineProperties, null, context)).thenAnswer(invocation -> {
             assertEquals(RestoreJobStatus.RUNNING, context.getStatus());
             context.tryMarkFinalizing();
             return result;
@@ -63,7 +69,7 @@ class RestoreJobCoordinatorTest {
                 job
         );
 
-        verify(restoreReplicationLoop).restore("application", null, context);
+        verify(restoreReplicationLoop).restore("application", pipelineProperties, null, context);
     }
 
     @Test
@@ -98,7 +104,8 @@ class RestoreJobCoordinatorTest {
         RestoreJobExecutionContext context = job.getContext();
         addRunningJob(jobId, job);
         RestoreExecutionResult result = result();
-        when(restoreReplicationLoop.restore("application", null, context)).thenAnswer(invocation -> {
+        when(engineKafkaProperties.requirePipeline("application")).thenReturn(pipelineProperties);
+        when(restoreReplicationLoop.restore("application", pipelineProperties, null, context)).thenAnswer(invocation -> {
             context.tryMarkFinalizing();
             assertEquals(RestoreJobStatus.FINALIZING, context.getStatus());
             return result;
@@ -123,7 +130,8 @@ class RestoreJobCoordinatorTest {
         InMemoryRestoreJob job = newJob(jobId);
         RestoreJobExecutionContext context = job.getContext();
         addRunningJob(jobId, job);
-        when(restoreReplicationLoop.restore("application", null, context)).thenAnswer(invocation -> {
+        when(engineKafkaProperties.requirePipeline("application")).thenReturn(pipelineProperties);
+        when(restoreReplicationLoop.restore("application", pipelineProperties, null, context)).thenAnswer(invocation -> {
             context.requestCancellation();
             throw new RestoreJobCancellationException("cancelled");
         });
@@ -147,7 +155,8 @@ class RestoreJobCoordinatorTest {
         RestoreJobExecutionContext context = job.getContext();
         addRunningJob(jobId, job);
         RuntimeException failure = new RuntimeException("boom");
-        when(restoreReplicationLoop.restore("application", null, context)).thenThrow(failure);
+        when(engineKafkaProperties.requirePipeline("application")).thenReturn(pipelineProperties);
+        when(restoreReplicationLoop.restore("application", pipelineProperties, null, context)).thenThrow(failure);
 
         ReflectionTestUtils.invokeMethod(
                 coordinator,
@@ -168,7 +177,8 @@ class RestoreJobCoordinatorTest {
         InMemoryRestoreJob job = newJob(jobId);
         RestoreJobExecutionContext context = job.getContext();
         addRunningJob(jobId, job);
-        when(restoreReplicationLoop.restore("application", null, context))
+        when(engineKafkaProperties.requirePipeline("application")).thenReturn(pipelineProperties);
+        when(restoreReplicationLoop.restore("application", pipelineProperties, null, context))
                 .thenThrow(new RuntimeException("boom"));
 
         ReflectionTestUtils.invokeMethod(

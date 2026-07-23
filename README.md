@@ -61,11 +61,15 @@ resolve expected payload class
     ↓
 is the payload class registered as file-capable?
     ├── yes → unpack JSON payload into the expected class
+    │         ↓
+    │     run optional message-type checker
     └── no  → run the configured message-type checker
 ```
 
 This version intentionally stops at unpacking or type checking.
 It does not perform S3 lookups, checksum checks, or binary completeness validation.
+If a file-capable message does not actually include file data, the loop still continues as long as
+the payload can be unpacked and any configured type check passes.
 
 ### Example type-only message
 
@@ -151,13 +155,14 @@ Flow:
 Once the background task starts, the coordinator executes:
 
 1. `context.markRunning()`
-2. `RestoreReplicationLoop.restore(...)`
-3. If the loop returns successfully:
+2. resolve `EngineKafkaProperties.PipelineProperties` from the configured `restoreType`
+3. `RestoreReplicationLoop.restore(...)`
+4. If the loop returns successfully:
    - the in-memory job records the `RestoreExecutionResult`
    - the context transitions `FINALIZING -> COMPLETED`
-4. If cancellation is raised:
+5. If cancellation is raised:
    - the context transitions `CANCELLATION_REQUESTED -> CANCELLED`
-5. If any other runtime failure happens:
+6. If any other runtime failure happens:
    - the context transitions to `FAILED`
 
 Only one active restore job is allowed at a time.
@@ -181,7 +186,8 @@ Its responsibilities are:
 
 #### 1. Resolve pipeline and create Kafka clients
 
-The loop resolves the configured pipeline from `restoreType` and opens:
+The coordinator resolves the configured pipeline from `restoreType` and passes that
+`PipelineProperties` object into the loop. The loop then opens:
 
 - a transactional `KafkaProducer<String, byte[]>`
 - a `KafkaConsumer<String, byte[]>`
@@ -253,7 +259,7 @@ Records at or above the captured boundary are ignored for this run.
 For every non-empty restorable batch, `restoreBatch(...)` does:
 
 1. `producer.beginTransaction()`
-2. validate the source record payload using the configured `messageType`
+2. validate the source record payload using the configured pipeline
 3. sequentially send every record to the target topic
 4. calculate the next source offsets
 5. `producer.sendOffsetsToTransaction(...)`
@@ -399,7 +405,7 @@ Valid transitions:
   Summary of a completed restore run, including source topic, target topic, batch count, and restored record count.
 
 - `RestorePayloadValidator`
-  Selects the validation path for each record and performs either file-capable unpacking or configured type-only checking.
+  Selects the validation path for each record and performs either file-capable unpacking or configured type checking.
 
 - `ConfiguredPayloadTypeResolver`
   Resolves the configured pipeline `messageType` to the Java payload class.
@@ -408,7 +414,7 @@ Valid transitions:
   Declares which payload classes should be unpacked on the restore path.
 
 - `ExpectedMessageTypeCheckerRegistry`
-  Declares which non-file-bearing message types use explicit type-check logic.
+  Declares which message types have explicit type-check logic beyond plain unpacking.
 
 ### Configuration
 

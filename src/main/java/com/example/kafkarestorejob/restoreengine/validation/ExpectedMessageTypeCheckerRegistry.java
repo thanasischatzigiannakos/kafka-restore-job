@@ -3,6 +3,7 @@ package com.example.kafkarestorejob.restoreengine.validation;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -32,5 +33,9 @@ public class ExpectedMessageTypeCheckerRegistry {
             );
         }
         return checker;
+    }
+
+    public Optional<ExpectedMessageTypeChecker> findChecker(String messageType) {
+        return Optional.ofNullable(checkersByMessageType.get(messageType));
     }
 }

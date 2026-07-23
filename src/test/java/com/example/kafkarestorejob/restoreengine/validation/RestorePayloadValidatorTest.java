@@ -7,6 +7,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.example.kafkarestorejob.restoreengine.config.EngineKafkaProperties;
 import com.example.kafkarestorejob.restoreengine.serialization.MessageUnpackingException;
 import com.example.kafkarestorejob.restoreengine.serialization.RestoreMessageUnpackerResolver;
 import java.util.UUID;
@@ -33,6 +34,7 @@ class RestorePayloadValidatorTest {
 
     private RestorePayloadValidator validator;
     private RestoreRecordValidationContext context;
+    private EngineKafkaProperties.PipelineProperties pipeline;
 
     @BeforeEach
     void setUp() {
@@ -42,6 +44,8 @@ class RestorePayloadValidatorTest {
                 checkerRegistry,
                 unpackerResolver
         );
+        pipeline = new EngineKafkaProperties.PipelineProperties();
+        pipeline.setMessageType("type-only");
         context = new RestoreRecordValidationContext(
                 UUID.randomUUID(),
                 "test-restore",
@@ -58,7 +62,7 @@ class RestorePayloadValidatorTest {
         when(checkerRegistry.requireChecker("type-only")).thenReturn((validationContext, payloadBytes) -> {
         });
 
-        validator.validate("type-only", context, "{\"value\":1}".getBytes());
+        validator.validate(pipeline, context, "{\"value\":1}".getBytes());
 
         verify(checkerRegistry).requireChecker("type-only");
         verify(unpackerResolver, never()).unpack(any(), any());
@@ -66,18 +70,36 @@ class RestorePayloadValidatorTest {
 
     @Test
     void fileCapableValidationUnpacksOnceWithoutFurtherValidation() {
+        pipeline.setMessageType("file-type");
         when(typeResolver.resolve("file-type")).thenReturn(TestPayload.class);
         when(fileCapablePayloadRegistry.supports(TestPayload.class)).thenReturn(true);
         when(unpackerResolver.unpack(eq("file-type"), any())).thenReturn(new TestPayload());
 
-        validator.validate("file-type", context, "{\"value\":1}".getBytes());
+        validator.validate(pipeline, context, "{\"value\":1}".getBytes());
 
         verify(unpackerResolver).unpack(eq("file-type"), any());
         verify(checkerRegistry, never()).requireChecker("file-type");
     }
 
     @Test
+    void fileCapableValidationRunsOptionalTypeCheckerAfterUnpack() {
+        pipeline.setMessageType("application");
+        ExpectedMessageTypeChecker checker = (validationContext, payloadBytes) -> {
+        };
+        when(typeResolver.resolve("application")).thenReturn(TestPayload.class);
+        when(fileCapablePayloadRegistry.supports(TestPayload.class)).thenReturn(true);
+        when(unpackerResolver.unpack(eq("application"), any())).thenReturn(new TestPayload());
+        when(checkerRegistry.findChecker("application")).thenReturn(java.util.Optional.of(checker));
+
+        validator.validate(pipeline, context, "{\"entityType\":\"application\"}".getBytes());
+
+        verify(unpackerResolver).unpack(eq("application"), any());
+        verify(checkerRegistry).findChecker("application");
+    }
+
+    @Test
     void unpackingFailureIsWrapped() {
+        pipeline.setMessageType("file-type");
         when(typeResolver.resolve("file-type")).thenReturn(TestPayload.class);
         when(fileCapablePayloadRegistry.supports(TestPayload.class)).thenReturn(true);
         when(unpackerResolver.unpack(eq("file-type"), any()))
@@ -85,7 +107,7 @@ class RestorePayloadValidatorTest {
 
         assertThrows(
                 RestorePayloadValidationException.class,
-                () -> validator.validate("file-type", context, "{\"value\":1}".getBytes())
+                () -> validator.validate(pipeline, context, "{\"value\":1}".getBytes())
         );
     }
 

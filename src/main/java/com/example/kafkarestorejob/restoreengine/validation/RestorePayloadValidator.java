@@ -1,5 +1,6 @@
 package com.example.kafkarestorejob.restoreengine.validation;
 
+import com.example.kafkarestorejob.restoreengine.config.EngineKafkaProperties;
 import com.example.kafkarestorejob.restoreengine.serialization.MessageUnpackingException;
 import com.example.kafkarestorejob.restoreengine.serialization.RestoreMessageUnpackerResolver;
 import org.springframework.stereotype.Component;
@@ -25,10 +26,11 @@ public class RestorePayloadValidator {
     }
 
     public void validate(
-            String configuredMessageType,
+            EngineKafkaProperties.PipelineProperties pipeline,
             RestoreRecordValidationContext context,
             byte[] payloadBytes
     ) {
+        String configuredMessageType = pipeline.getMessageType();
         Class<?> expectedClass = typeResolver.resolve(configuredMessageType);
         if (!fileCapablePayloadRegistry.supports(expectedClass)) {
             checkerRegistry.requireChecker(configuredMessageType).validate(context, payloadBytes);
@@ -36,6 +38,8 @@ public class RestorePayloadValidator {
         }
 
         unpackPayload(configuredMessageType, context, payloadBytes);
+        checkerRegistry.findChecker(configuredMessageType)
+                .ifPresent(checker -> checker.validate(context, payloadBytes));
     }
 
     private Object unpackPayload(

@@ -128,9 +128,9 @@ class RestoreReplicationLoopTest {
         when(consumer.position(TOPIC_PARTITION)).thenReturn(0L);
         when(consumer.endOffsets(java.util.Set.of(TOPIC_PARTITION))).thenReturn(Map.of(TOPIC_PARTITION, 2L));
 
-        restoreReplicationLoop.restore(RESTORE_TYPE, null, context);
+        restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context);
 
-        verify(payloadValidator, times(2)).validate(eq("application"), any(), any());
+        verify(payloadValidator, times(2)).validate(eq(pipelineProperties), any(), any());
         verify(producer).beginTransaction();
         verify(producer, times(2)).send(any(ProducerRecord.class));
         verify(producer).sendOffsetsToTransaction(anyMap(), eq(groupMetadata));
@@ -147,14 +147,14 @@ class RestoreReplicationLoopTest {
         when(consumer.position(TOPIC_PARTITION)).thenReturn(0L);
         when(consumer.endOffsets(java.util.Set.of(TOPIC_PARTITION))).thenReturn(Map.of(TOPIC_PARTITION, 2L));
 
-        restoreReplicationLoop.restore(RESTORE_TYPE, null, context);
+        restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context);
 
         InOrder inOrder = inOrder(producer, payloadValidator, transformer);
         inOrder.verify(producer).beginTransaction();
-        inOrder.verify(payloadValidator).validate(eq("application"), any(), any());
+        inOrder.verify(payloadValidator).validate(eq(pipelineProperties), any(), any());
         inOrder.verify(transformer).transform(eq(TARGET_TOPIC), any());
         inOrder.verify(producer).send(any(ProducerRecord.class));
-        inOrder.verify(payloadValidator).validate(eq("application"), any(), any());
+        inOrder.verify(payloadValidator).validate(eq(pipelineProperties), any(), any());
         inOrder.verify(transformer).transform(eq(TARGET_TOPIC), any());
         inOrder.verify(producer).send(any(ProducerRecord.class));
         inOrder.verify(producer).sendOffsetsToTransaction(anyMap(), eq(groupMetadata));
@@ -171,7 +171,7 @@ class RestoreReplicationLoopTest {
         when(consumer.position(TOPIC_PARTITION)).thenReturn(0L);
         when(consumer.endOffsets(java.util.Set.of(TOPIC_PARTITION))).thenReturn(Map.of(TOPIC_PARTITION, 3L));
 
-        restoreReplicationLoop.restore(RESTORE_TYPE, null, context);
+        restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context);
 
         ArgumentCaptor<ProducerRecord<String, byte[]>> captor = ArgumentCaptor.forClass(ProducerRecord.class);
         verify(producer, times(3)).send(captor.capture());
@@ -193,7 +193,7 @@ class RestoreReplicationLoopTest {
         when(consumer.endOffsets(java.util.Set.of(TOPIC_PARTITION))).thenReturn(Map.of(TOPIC_PARTITION, 2L));
 
         assertThrows(RestoreEngineException.class,
-                () -> restoreReplicationLoop.restore(RESTORE_TYPE, null, context));
+                () -> restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context));
 
         verify(producer).abortTransaction();
         verify(producer, never()).sendOffsetsToTransaction(anyMap(), any());
@@ -203,7 +203,7 @@ class RestoreReplicationLoopTest {
     void abortsTransactionWhenValidationFailsBeforeSend() {
         RestoreJobExecutionContext context = runningContext();
         doThrow(new RuntimeException("validation failed")).when(payloadValidator)
-                .validate(eq("application"), any(), any());
+                .validate(eq(pipelineProperties), any(), any());
         when(consumer.poll(any(Duration.class))).thenReturn(
                 ConsumerRecords.empty(),
                 records(record(0L), record(1L))
@@ -212,11 +212,11 @@ class RestoreReplicationLoopTest {
         when(consumer.endOffsets(java.util.Set.of(TOPIC_PARTITION))).thenReturn(Map.of(TOPIC_PARTITION, 2L));
 
         assertThrows(RestoreEngineException.class,
-                () -> restoreReplicationLoop.restore(RESTORE_TYPE, null, context));
+                () -> restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context));
 
         InOrder inOrder = inOrder(producer, payloadValidator);
         inOrder.verify(producer).beginTransaction();
-        inOrder.verify(payloadValidator).validate(eq("application"), any(), any());
+        inOrder.verify(payloadValidator).validate(eq(pipelineProperties), any(), any());
         inOrder.verify(producer).abortTransaction();
         verify(producer, never()).send(any(ProducerRecord.class));
         verify(producer, never()).sendOffsetsToTransaction(anyMap(), any());
@@ -236,7 +236,7 @@ class RestoreReplicationLoopTest {
         when(consumer.endOffsets(java.util.Set.of(TOPIC_PARTITION))).thenReturn(Map.of(TOPIC_PARTITION, 2L));
 
         assertThrows(RestoreEngineException.class,
-                () -> restoreReplicationLoop.restore(RESTORE_TYPE, null, context));
+                () -> restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context));
 
         verify(producer).abortTransaction();
     }
@@ -253,7 +253,7 @@ class RestoreReplicationLoopTest {
         when(consumer.endOffsets(java.util.Set.of(TOPIC_PARTITION))).thenReturn(Map.of(TOPIC_PARTITION, 2L));
 
         assertThrows(RestoreEngineException.class,
-                () -> restoreReplicationLoop.restore(RESTORE_TYPE, null, context));
+                () -> restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context));
 
         verify(producer).abortTransaction();
     }
@@ -277,7 +277,7 @@ class RestoreReplicationLoopTest {
         when(consumer.endOffsets(java.util.Set.of(TOPIC_PARTITION))).thenReturn(Map.of(TOPIC_PARTITION, 2L));
 
         assertThrows(RestoreEngineException.class,
-                () -> restoreReplicationLoop.restore(RESTORE_TYPE, null, context));
+                () -> restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context));
 
         verify(producer, never()).sendOffsetsToTransaction(anyMap(), any());
     }
@@ -292,7 +292,7 @@ class RestoreReplicationLoopTest {
         when(consumer.position(TOPIC_PARTITION)).thenReturn(0L);
         when(consumer.endOffsets(java.util.Set.of(TOPIC_PARTITION))).thenReturn(Map.of(TOPIC_PARTITION, 2L));
 
-        RestoreExecutionResult result = restoreReplicationLoop.restore(RESTORE_TYPE, null, context);
+        RestoreExecutionResult result = restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context);
 
         verify(producer, times(2)).send(any(ProducerRecord.class));
         ArgumentCaptor<Map<TopicPartition, OffsetAndMetadata>> offsetsCaptor =
@@ -313,7 +313,7 @@ class RestoreReplicationLoopTest {
         when(consumer.position(TOPIC_PARTITION)).thenReturn(0L);
         when(consumer.endOffsets(java.util.Set.of(TOPIC_PARTITION))).thenReturn(Map.of(TOPIC_PARTITION, 1L));
 
-        restoreReplicationLoop.restore(RESTORE_TYPE, null, context);
+        restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context);
 
         verify(producer).beginTransaction();
         verify(producer).send(any(ProducerRecord.class));
@@ -337,7 +337,7 @@ class RestoreReplicationLoopTest {
         when(consumer.endOffsets(java.util.Set.of(TOPIC_PARTITION))).thenReturn(Map.of(TOPIC_PARTITION, 2L));
 
         assertThrows(RestoreJobCancellationException.class,
-                () -> restoreReplicationLoop.restore(RESTORE_TYPE, null, context));
+                () -> restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context));
 
         verify(producer).abortTransaction();
     }
@@ -352,7 +352,7 @@ class RestoreReplicationLoopTest {
         when(consumer.position(TOPIC_PARTITION)).thenReturn(0L);
         when(consumer.endOffsets(java.util.Set.of(TOPIC_PARTITION))).thenReturn(Map.of(TOPIC_PARTITION, 1L));
 
-        restoreReplicationLoop.restore(RESTORE_TYPE, null, context);
+        restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context);
 
         assertFalse(context.requestCancellation());
         verify(producer, never()).abortTransaction();
@@ -366,7 +366,7 @@ class RestoreReplicationLoopTest {
         when(consumer.position(TOPIC_PARTITION)).thenReturn(3L);
         when(consumer.endOffsets(java.util.Set.of(TOPIC_PARTITION))).thenReturn(Map.of(TOPIC_PARTITION, 3L));
 
-        RestoreExecutionResult result = restoreReplicationLoop.restore(RESTORE_TYPE, null, context);
+        RestoreExecutionResult result = restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context);
 
         verify(producer, never()).beginTransaction();
         assertEquals(0, result.batchesCommitted());
@@ -385,7 +385,7 @@ class RestoreReplicationLoopTest {
         when(consumer.position(TOPIC_PARTITION)).thenReturn(0L);
         when(consumer.endOffsets(java.util.Set.of(TOPIC_PARTITION))).thenReturn(Map.of(TOPIC_PARTITION, 3L));
 
-        RestoreExecutionResult result = restoreReplicationLoop.restore(RESTORE_TYPE, null, context);
+        RestoreExecutionResult result = restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context);
 
         verify(producer, times(2)).beginTransaction();
         assertEquals(2, result.batchesCommitted());

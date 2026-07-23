@@ -111,8 +111,9 @@ public class RestoreJobCoordinator {
             job.markStarted();
             log.info("Restore job {} entered RUNNING", jobId);
 
+            EngineKafkaProperties.PipelineProperties pipeline = engineKafkaProperties.requirePipeline(restoreType);
             RestoreExecutionResult result =
-                    restoreReplicationLoop.restore(restoreType, restoreFromTimestamp, context);
+                    restoreReplicationLoop.restore(restoreType, pipeline, restoreFromTimestamp, context);
 
             job.recordExecutionResult(result);
             context.markCompleted();

@@ -54,11 +54,10 @@ public class RestoreReplicationLoop {
 
     public RestoreExecutionResult restore(
             String restoreType,
+            EngineKafkaProperties.PipelineProperties pipeline,
             Instant restoreFromTimestamp,
             RestoreJobExecutionContext context
     ) {
-        EngineKafkaProperties.PipelineProperties pipeline =
-                kafkaClientConfiguration.requirePipeline(restoreType);
         EngineKafkaProperties engineKafkaProperties =
                 kafkaClientConfiguration.getEngineKafkaProperties();
         RestoreTransformer transformer =
@@ -95,11 +94,10 @@ public class RestoreReplicationLoop {
                         producer,
                         context,
                         restoreType,
-                        pipeline.getTargetTopic(),
+                        pipeline,
                         restoreEndOffsets,
                         engineKafkaProperties,
                         loopState,
-                        pipeline.getMessageType(),
                         transformer
                 );
 
@@ -133,11 +131,10 @@ public class RestoreReplicationLoop {
             KafkaProducer<String, byte[]> producer,
             RestoreJobExecutionContext context,
             String restoreType,
-            String targetTopic,
+            EngineKafkaProperties.PipelineProperties pipeline,
             Map<TopicPartition, Long> restoreEndOffsets,
             EngineKafkaProperties engineKafkaProperties,
             RestoreLoopState loopState,
-            String configuredMessageType,
             RestoreTransformer transformer
     ) {
         context.throwIfCancellationRequested();
@@ -159,11 +156,10 @@ public class RestoreReplicationLoop {
                 producer,
                 context,
                 restoreType,
-                targetTopic,
+                pipeline,
                 restoreEndOffsets,
                 loopState,
                 recordsToRestore,
-                configuredMessageType,
                 transformer
         );
     }
@@ -212,11 +208,10 @@ public class RestoreReplicationLoop {
             KafkaProducer<String, byte[]> producer,
             RestoreJobExecutionContext context,
             String restoreType,
-            String targetTopic,
+            EngineKafkaProperties.PipelineProperties pipeline,
             Map<TopicPartition, Long> restoreEndOffsets,
             RestoreLoopState loopState,
             List<ConsumerRecord<String, byte[]>> recordsToRestore,
-            String configuredMessageType,
             RestoreTransformer transformer
     ) {
         Map<TopicPartition, OffsetAndMetadata> offsets =
@@ -234,9 +229,8 @@ public class RestoreReplicationLoop {
                 offsets,
                 context,
                 restoreType,
-                targetTopic,
+                pipeline,
                 finalBatch,
-                configuredMessageType,
                 transformer
         );
 
@@ -338,9 +332,8 @@ public class RestoreReplicationLoop {
             Map<TopicPartition, OffsetAndMetadata> offsets,
             RestoreJobExecutionContext context,
             String restoreType,
-            String targetTopic,
+            EngineKafkaProperties.PipelineProperties pipeline,
             boolean finalBatch,
-            String configuredMessageType,
             RestoreTransformer transformer
     ) {
         producer.beginTransaction();
@@ -348,7 +341,7 @@ public class RestoreReplicationLoop {
             for (ConsumerRecord<String, byte[]> sourceRecord : records) {
                 context.throwIfCancellationRequested();
                 payloadValidator.validate(
-                        configuredMessageType,
+                        pipeline,
                         new RestoreRecordValidationContext(
                                 context.getJobId(),
                                 restoreType,
@@ -359,7 +352,7 @@ public class RestoreReplicationLoop {
                         sourceRecord.value()
                 );
                 ProducerRecord<String, byte[]> targetRecord =
-                        transformer.transform(targetTopic, sourceRecord);
+                        transformer.transform(pipeline.getTargetTopic(), sourceRecord);
 
                 producer.send(targetRecord).get();
             }
