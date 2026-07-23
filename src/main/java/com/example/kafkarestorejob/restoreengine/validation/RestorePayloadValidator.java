@@ -3,6 +3,10 @@ package com.example.kafkarestorejob.restoreengine.validation;
 import com.example.kafkarestorejob.restoreengine.config.EngineKafkaProperties;
 import com.example.kafkarestorejob.restoreengine.serialization.MessageUnpackingException;
 import com.example.kafkarestorejob.restoreengine.serialization.RestoreMessageUnpackerResolver;
+import com.example.kafkarestorejob.restoreengine.verification.FileReference;
+import com.example.kafkarestorejob.restoreengine.verification.FileReferenceExtractorRegistry;
+import com.example.kafkarestorejob.restoreengine.verification.S3FileExistenceVerifier;
+import java.util.Collection;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -12,17 +16,23 @@ public class RestorePayloadValidator {
     private final FileCapablePayloadRegistry fileCapablePayloadRegistry;
     private final ExpectedMessageTypeCheckerRegistry checkerRegistry;
     private final RestoreMessageUnpackerResolver unpackerResolver;
+    private final FileReferenceExtractorRegistry fileReferenceExtractorRegistry;
+    private final S3FileExistenceVerifier s3FileExistenceVerifier;
 
     public RestorePayloadValidator(
             ExpectedPayloadTypeResolver typeResolver,
             FileCapablePayloadRegistry fileCapablePayloadRegistry,
             ExpectedMessageTypeCheckerRegistry checkerRegistry,
-            RestoreMessageUnpackerResolver unpackerResolver
+            RestoreMessageUnpackerResolver unpackerResolver,
+            FileReferenceExtractorRegistry fileReferenceExtractorRegistry,
+            S3FileExistenceVerifier s3FileExistenceVerifier
     ) {
         this.typeResolver = typeResolver;
         this.fileCapablePayloadRegistry = fileCapablePayloadRegistry;
         this.checkerRegistry = checkerRegistry;
         this.unpackerResolver = unpackerResolver;
+        this.fileReferenceExtractorRegistry = fileReferenceExtractorRegistry;
+        this.s3FileExistenceVerifier = s3FileExistenceVerifier;
     }
 
     public void validate(
@@ -37,9 +47,14 @@ public class RestorePayloadValidator {
             return;
         }
 
-        unpackPayload(configuredMessageType, context, payloadBytes);
+        Object unpackedPayload = unpackPayload(configuredMessageType, context, payloadBytes);
         checkerRegistry.findChecker(configuredMessageType)
                 .ifPresent(checker -> checker.validate(context, payloadBytes));
+        Collection<FileReference> references =
+                fileReferenceExtractorRegistry.extract(expectedClass, unpackedPayload);
+        for (FileReference reference : references) {
+            s3FileExistenceVerifier.verifyExists(context, configuredMessageType, reference);
+        }
     }
 
     private Object unpackPayload(

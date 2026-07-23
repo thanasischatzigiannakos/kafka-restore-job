@@ -22,7 +22,7 @@ The main goals of the runtime design are:
 
 ## Message Validation Approach
 
-Before a consumed record is sent to the target topic, the restore loop validates it against the configured pipeline `messageType`.
+Before a consumed record is sent to the target topic, the restore loop validates it against the configured pipeline `type`.
 
 The current implementation supports two validation paths:
 
@@ -39,13 +39,13 @@ The distinction is explicit.
 ### Current supporting classes
 
 - `ConfiguredPayloadTypeResolver`
-  Maps configured pipeline `messageType` values such as `application`, `abuse`, and `notification` to the Java payload class used for JSON unpacking.
+  Maps configured pipeline `type` values such as `application`, `abuse`, and `notification` to the Java payload class used for JSON unpacking.
 
 - `FileCapablePayloadRegistry`
   Holds the explicit set of payload classes that should be unpacked on the restore path because they may contain file-related content.
 
 - `ExpectedMessageTypeCheckerRegistry`
-  Holds the explicit set of type-check-only validators keyed by configured `messageType`.
+  Holds the explicit set of type-check-only validators keyed by configured `type`.
 
 - `RestorePayloadValidator`
   Chooses which validation path to use for each consumed record.
@@ -55,7 +55,7 @@ The distinction is explicit.
 For every consumed Kafka record, the loop now follows this path:
 
 ```text
-read configured pipeline.messageType
+read configured pipeline.type
     ↓
 resolve expected payload class
     ↓
@@ -259,7 +259,7 @@ Records at or above the captured boundary are ignored for this run.
 For every non-empty restorable batch, `restoreBatch(...)` does:
 
 1. `producer.beginTransaction()`
-2. validate the source record payload using the configured pipeline
+2. validate the source record payload using the configured pipeline `type`
 3. sequentially send every record to the target topic
 4. calculate the next source offsets
 5. `producer.sendOffsetsToTransaction(...)`
