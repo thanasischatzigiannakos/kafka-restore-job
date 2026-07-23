@@ -30,7 +30,7 @@ public class RestorePayloadValidator {
             RestoreRecordValidationContext context,
             byte[] payloadBytes
     ) {
-        String configuredMessageType = pipeline.getMessageType();
+        String configuredMessageType = pipeline.getType();
         Class<?> expectedClass = typeResolver.resolve(configuredMessageType);
         if (!fileCapablePayloadRegistry.supports(expectedClass)) {
             checkerRegistry.requireChecker(configuredMessageType).validate(context, payloadBytes);

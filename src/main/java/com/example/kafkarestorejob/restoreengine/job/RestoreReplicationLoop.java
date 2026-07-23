@@ -56,29 +56,15 @@ public class RestoreReplicationLoop {
             String restoreType,
             EngineKafkaProperties.PipelineProperties pipeline,
             Instant restoreFromTimestamp,
-            RestoreJobExecutionContext context
+            RestoreJobExecutionContext context,
+            boolean resumeFromCommittedOffsets
     ) {
         return restoreInternal(
                 restoreType,
                 pipeline,
                 restoreFromTimestamp,
                 context,
-                false
-        );
-    }
-
-    public RestoreExecutionResult resume(
-            String restoreType,
-            EngineKafkaProperties.PipelineProperties pipeline,
-            Instant restoreFromTimestamp,
-            RestoreJobExecutionContext context
-    ) {
-        return restoreInternal(
-                restoreType,
-                pipeline,
-                restoreFromTimestamp,
-                context,
-                true
+                resumeFromCommittedOffsets
         );
     }
 
@@ -92,7 +78,7 @@ public class RestoreReplicationLoop {
         EngineKafkaProperties engineKafkaProperties =
                 kafkaClientConfiguration.getEngineKafkaProperties();
         RestoreTransformer transformer =
-                transformerResolver.resolve(pipeline.getMessageType());
+                transformerResolver.resolve(pipeline.getType());
 
         int emptyPolls = 0;
         int committedBatches = 0;
@@ -354,7 +340,7 @@ public class RestoreReplicationLoop {
                 pipeline.getTargetTopic(),
                 pipeline.getGroupId(),
                 pipeline.getTransactionalId(),
-                pipeline.getMessageType(),
+                pipeline.getType(),
                 committedBatches,
                 restoredRecords,
                 emptyPolls

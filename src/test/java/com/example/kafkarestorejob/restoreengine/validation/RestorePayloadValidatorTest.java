@@ -45,7 +45,7 @@ class RestorePayloadValidatorTest {
                 unpackerResolver
         );
         pipeline = new EngineKafkaProperties.PipelineProperties();
-        pipeline.setMessageType("type-only");
+        pipeline.setType("type-only");
         context = new RestoreRecordValidationContext(
                 UUID.randomUUID(),
                 "test-restore",
@@ -70,7 +70,7 @@ class RestorePayloadValidatorTest {
 
     @Test
     void fileCapableValidationUnpacksOnceWithoutFurtherValidation() {
-        pipeline.setMessageType("file-type");
+        pipeline.setType("file-type");
         when(typeResolver.resolve("file-type")).thenReturn(TestPayload.class);
         when(fileCapablePayloadRegistry.supports(TestPayload.class)).thenReturn(true);
         when(unpackerResolver.unpack(eq("file-type"), any())).thenReturn(new TestPayload());
@@ -83,7 +83,7 @@ class RestorePayloadValidatorTest {
 
     @Test
     void fileCapableValidationRunsOptionalTypeCheckerAfterUnpack() {
-        pipeline.setMessageType("application");
+        pipeline.setType("application");
         ExpectedMessageTypeChecker checker = (validationContext, payloadBytes) -> {
         };
         when(typeResolver.resolve("application")).thenReturn(TestPayload.class);
@@ -99,7 +99,7 @@ class RestorePayloadValidatorTest {
 
     @Test
     void unpackingFailureIsWrapped() {
-        pipeline.setMessageType("file-type");
+        pipeline.setType("file-type");
         when(typeResolver.resolve("file-type")).thenReturn(TestPayload.class);
         when(fileCapablePayloadRegistry.supports(TestPayload.class)).thenReturn(true);
         when(unpackerResolver.unpack(eq("file-type"), any()))

@@ -41,7 +41,7 @@ class RestoreJobCoordinatorTest {
                 restoreJobExecutor
         );
         pipelineProperties = new EngineKafkaProperties.PipelineProperties();
-        pipelineProperties.setMessageType("application");
+        pipelineProperties.setType("application");
         pipelineProperties.setSourceTopic("source-topic");
         pipelineProperties.setTargetTopic("target-topic");
     }
@@ -54,7 +54,7 @@ class RestoreJobCoordinatorTest {
         addRunningJob(jobId, job);
         RestoreExecutionResult result = result();
         when(engineKafkaProperties.requirePipeline("application")).thenReturn(pipelineProperties);
-        when(restoreReplicationLoop.restore("application", pipelineProperties, null, context)).thenAnswer(invocation -> {
+        when(restoreReplicationLoop.restore("application", pipelineProperties, null, context, false)).thenAnswer(invocation -> {
             assertEquals(RestoreJobStatus.RUNNING, context.getStatus());
             context.tryMarkFinalizing();
             return result;
@@ -69,7 +69,7 @@ class RestoreJobCoordinatorTest {
                 job
         );
 
-        verify(restoreReplicationLoop).restore("application", pipelineProperties, null, context);
+        verify(restoreReplicationLoop).restore("application", pipelineProperties, null, context, false);
     }
 
     @Test
@@ -105,7 +105,7 @@ class RestoreJobCoordinatorTest {
         addRunningJob(jobId, job);
         RestoreExecutionResult result = result();
         when(engineKafkaProperties.requirePipeline("application")).thenReturn(pipelineProperties);
-        when(restoreReplicationLoop.restore("application", pipelineProperties, null, context)).thenAnswer(invocation -> {
+        when(restoreReplicationLoop.restore("application", pipelineProperties, null, context, false)).thenAnswer(invocation -> {
             context.tryMarkFinalizing();
             assertEquals(RestoreJobStatus.FINALIZING, context.getStatus());
             return result;
@@ -131,7 +131,7 @@ class RestoreJobCoordinatorTest {
         RestoreJobExecutionContext context = job.getContext();
         addRunningJob(jobId, job);
         when(engineKafkaProperties.requirePipeline("application")).thenReturn(pipelineProperties);
-        when(restoreReplicationLoop.restore("application", pipelineProperties, null, context)).thenAnswer(invocation -> {
+        when(restoreReplicationLoop.restore("application", pipelineProperties, null, context, false)).thenAnswer(invocation -> {
             context.requestCancellation();
             throw new RestoreJobCancellationException("cancelled");
         });
@@ -156,7 +156,7 @@ class RestoreJobCoordinatorTest {
         addRunningJob(jobId, job);
         RuntimeException failure = new RuntimeException("boom");
         when(engineKafkaProperties.requirePipeline("application")).thenReturn(pipelineProperties);
-        when(restoreReplicationLoop.restore("application", pipelineProperties, null, context)).thenThrow(failure);
+        when(restoreReplicationLoop.restore("application", pipelineProperties, null, context, false)).thenThrow(failure);
 
         ReflectionTestUtils.invokeMethod(
                 coordinator,
@@ -178,7 +178,7 @@ class RestoreJobCoordinatorTest {
         RestoreJobExecutionContext context = job.getContext();
         addRunningJob(jobId, job);
         when(engineKafkaProperties.requirePipeline("application")).thenReturn(pipelineProperties);
-        when(restoreReplicationLoop.restore("application", pipelineProperties, null, context))
+        when(restoreReplicationLoop.restore("application", pipelineProperties, null, context, false))
                 .thenThrow(new RuntimeException("boom"));
 
         ReflectionTestUtils.invokeMethod(
