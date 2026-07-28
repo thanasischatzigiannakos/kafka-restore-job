@@ -16,19 +16,15 @@ import software.amazon.awssdk.services.s3.S3Configuration;
 public class S3ClientFactory {
 
     private final EngineS3Properties properties;
-    private final S3BucketResolver bucketResolver;
 
-    public S3ClientFactory(EngineS3Properties properties, S3BucketResolver bucketResolver) {
+    public S3ClientFactory(EngineS3Properties properties) {
         this.properties = properties;
-        this.bucketResolver = bucketResolver;
     }
 
-    public S3Client createClient(String bucketKey) {
-        EngineS3Properties.BucketProperties bucketProperties = bucketResolver.resolve(bucketKey);
-
+    public S3Client createClient() {
         S3ClientBuilder builder = S3Client.builder()
-                .region(Region.of(bucketProperties.getRegion()))
-                .serviceConfiguration(S3Configuration.builder().pathStyleAccessEnabled(bucketProperties.isPathStyleAccess()).build())
+                .region(Region.of(properties.getRegion()))
+                .serviceConfiguration(S3Configuration.builder().pathStyleAccessEnabled(properties.isPathStyleAccess()).build())
                 .overrideConfiguration(
                         ClientOverrideConfiguration.builder()
                                 .apiCallAttemptTimeout(properties.getReadTimeout())
@@ -36,14 +32,14 @@ public class S3ClientFactory {
                                 .build()
                 );
 
-        if (StringUtils.hasText(bucketProperties.getEndpoint())) {
-            builder.endpointOverride(URI.create(bucketProperties.getEndpoint()));
+        if (StringUtils.hasText(properties.getEndpoint())) {
+            builder.endpointOverride(URI.create(properties.getEndpoint()));
         }
 
-        if (StringUtils.hasText(bucketProperties.getAccessKey()) && StringUtils.hasText(bucketProperties.getSecretKey())) {
+        if (StringUtils.hasText(properties.getAccessKey()) && StringUtils.hasText(properties.getSecretKey())) {
             builder.credentialsProvider(
                     StaticCredentialsProvider.create(
-                            AwsBasicCredentials.create(bucketProperties.getAccessKey(), bucketProperties.getSecretKey())
+                            AwsBasicCredentials.create(properties.getAccessKey(), properties.getSecretKey())
                     )
             );
         }

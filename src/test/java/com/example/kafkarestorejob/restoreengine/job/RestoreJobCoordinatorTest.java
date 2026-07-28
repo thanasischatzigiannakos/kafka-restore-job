@@ -41,7 +41,6 @@ class RestoreJobCoordinatorTest {
                 restoreJobExecutor
         );
         pipelineProperties = new EngineKafkaProperties.PipelineProperties();
-        pipelineProperties.setType("application");
         pipelineProperties.setSourceTopic("source-topic");
         pipelineProperties.setTargetTopic("target-topic");
     }

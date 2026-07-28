@@ -44,7 +44,7 @@ public class DefaultRestoreJobStateService implements RestoreJobStateService {
         entity.setStartedAt(Instant.now());
         entity.setSourceTopic(pipeline.getSourceTopic());
         entity.setTargetTopic(pipeline.getTargetTopic());
-        entity.setMessageType(pipeline.getMessageType());
+        entity.setMessageType(restoreType);
         restoreJobRepository.save(entity);
     }
 

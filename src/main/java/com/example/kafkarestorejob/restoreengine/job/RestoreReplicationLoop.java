@@ -6,7 +6,6 @@ import com.example.kafkarestorejob.restoreengine.kafka.KafkaOffsetCalculator;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreEngineException;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreExecutionResult;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreTransformer;
-import com.example.kafkarestorejob.restoreengine.kafka.RestoreTransformerResolver;
 import com.example.kafkarestorejob.restoreengine.validation.RestorePayloadValidator;
 import com.example.kafkarestorejob.restoreengine.validation.RestoreRecordValidationContext;
 import java.time.Duration;
@@ -38,18 +37,18 @@ public class RestoreReplicationLoop {
     private final KafkaClientConfiguration kafkaClientConfiguration;
     private final KafkaOffsetCalculator offsetCalculator;
     private final RestorePayloadValidator payloadValidator;
-    private final RestoreTransformerResolver transformerResolver;
+    private final RestoreTransformer transformer;
 
     public RestoreReplicationLoop(
             KafkaClientConfiguration kafkaClientConfiguration,
             KafkaOffsetCalculator offsetCalculator,
             RestorePayloadValidator payloadValidator,
-            RestoreTransformerResolver transformerResolver
+            RestoreTransformer transformer
     ) {
         this.kafkaClientConfiguration = kafkaClientConfiguration;
         this.offsetCalculator = offsetCalculator;
         this.payloadValidator = payloadValidator;
-        this.transformerResolver = transformerResolver;
+        this.transformer = transformer;
     }
 
     public RestoreExecutionResult restore(
@@ -77,8 +76,6 @@ public class RestoreReplicationLoop {
     ) {
         EngineKafkaProperties engineKafkaProperties =
                 kafkaClientConfiguration.getEngineKafkaProperties();
-        RestoreTransformer transformer =
-                transformerResolver.resolve(pipeline.getType());
 
         int emptyPolls = 0;
         int committedBatches = 0;
@@ -117,10 +114,10 @@ public class RestoreReplicationLoop {
                         context,
                         restoreType,
                         pipeline,
-                        restoreEndOffsets,
-                        engineKafkaProperties,
-                        loopState,
-                        transformer
+                restoreEndOffsets,
+                engineKafkaProperties,
+                loopState,
+                transformer
                 );
 
                 emptyPolls = pollBatchOutcome.emptyPolls();
@@ -340,7 +337,7 @@ public class RestoreReplicationLoop {
                 pipeline.getTargetTopic(),
                 pipeline.getGroupId(),
                 pipeline.getTransactionalId(),
-                pipeline.getType(),
+                restoreType,
                 committedBatches,
                 restoredRecords,
                 emptyPolls
@@ -363,7 +360,6 @@ public class RestoreReplicationLoop {
             for (ConsumerRecord<String, byte[]> sourceRecord : records) {
                 context.throwIfCancellationRequested();
                 payloadValidator.validate(
-                        pipeline,
                         new RestoreRecordValidationContext(
                                 context.getJobId(),
                                 restoreType,
@@ -374,7 +370,7 @@ public class RestoreReplicationLoop {
                         sourceRecord.value()
                 );
                 ProducerRecord<String, byte[]> targetRecord =
-                        transformer.transform(pipeline.getTargetTopic(), sourceRecord);
+                        transformer.transform(restoreType, pipeline.getTargetTopic(), sourceRecord);
 
                 producer.send(targetRecord).get();
             }

@@ -1,22 +1,50 @@
-package com.example.kafkarestorejob.restoreengine.verification;
+package com.example.kafkarestorejob.restoreengine.validation;
 
 import com.example.kafkarestorejob.restoreengine.serialization.model.ApplicationRestoreMessage;
+import com.example.kafkarestorejob.restoreengine.verification.FileReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import org.springframework.stereotype.Component;
 
 @Component
-public class ApplicationFileReferenceExtractor
-        implements FileReferenceExtractor<ApplicationRestoreMessage> {
+public class ApplicationRestorePayloadHandler
+        extends AbstractJsonRestorePayloadHandler<ApplicationRestoreMessage> {
+
+    public ApplicationRestorePayloadHandler(ObjectMapper objectMapper) {
+        super(objectMapper);
+    }
 
     @Override
-    public Class<ApplicationRestoreMessage> payloadClass() {
+    public String restoreType() {
+        return "application";
+    }
+
+    @Override
+    protected Class<ApplicationRestoreMessage> payloadClass() {
         return ApplicationRestoreMessage.class;
     }
 
     @Override
-    public Collection<FileReference> extract(ApplicationRestoreMessage payload) {
+    protected void validatePayloadType(
+            RestoreRecordValidationContext context,
+            ApplicationRestoreMessage payload
+    ) {
+        if (payload.getEntityType() == null || !"application".equalsIgnoreCase(payload.getEntityType())) {
+            throw new RestorePayloadValidationException(
+                    "Unexpected payload type for restoreType=" + context.restoreType()
+                            + " sourceTopic=" + context.sourceTopic()
+                            + " partition=" + context.partition()
+                            + " offset=" + context.offset()
+                            + " expectedMessageType=application"
+                            + " actualEntityType=" + payload.getEntityType()
+            );
+        }
+    }
+
+    @Override
+    protected Collection<FileReference> extractFileReferences(ApplicationRestoreMessage payload) {
         List<FileReference> references = new ArrayList<>();
         addIfPresent(references, "writtenDocument", payload.getWrittenDocument());
         addIfPresent(references, "signedForm", payload.getSignedForm());

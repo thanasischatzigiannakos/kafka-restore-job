@@ -15,6 +15,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import com.example.kafkarestorejob.restoreengine.config.EngineKafkaProperties;
 import com.example.kafkarestorejob.restoreengine.config.KafkaClientConfiguration;
@@ -22,7 +23,6 @@ import com.example.kafkarestorejob.restoreengine.kafka.KafkaOffsetCalculator;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreEngineException;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreExecutionResult;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreTransformer;
-import com.example.kafkarestorejob.restoreengine.kafka.RestoreTransformerResolver;
 import com.example.kafkarestorejob.restoreengine.validation.RestorePayloadValidator;
 import java.time.Duration;
 import java.util.List;
@@ -67,9 +67,6 @@ class RestoreReplicationLoopTest {
     private RestorePayloadValidator payloadValidator;
 
     @Mock
-    private RestoreTransformerResolver transformerResolver;
-
-    @Mock
     private RestoreTransformer transformer;
 
     private RestoreReplicationLoop restoreReplicationLoop;
@@ -83,7 +80,7 @@ class RestoreReplicationLoopTest {
                 kafkaClientConfiguration,
                 new KafkaOffsetCalculator(),
                 payloadValidator,
-                transformerResolver
+                transformer
         );
 
         engineKafkaProperties = new EngineKafkaProperties();
@@ -95,7 +92,6 @@ class RestoreReplicationLoopTest {
         pipelineProperties.setTargetTopic(TARGET_TOPIC);
         pipelineProperties.setGroupId("restore-group");
         pipelineProperties.setTransactionalId("restore-tx");
-        pipelineProperties.setType("application");
         pipelineProperties.setBatchSize(100);
 
         groupMetadata = new ConsumerGroupMetadata("restore-group");
@@ -105,9 +101,8 @@ class RestoreReplicationLoopTest {
         lenient().when(kafkaClientConfiguration.createProducer(nullable(String.class))).thenReturn(producer);
         lenient().when(consumer.assignment()).thenReturn(java.util.Set.of(TOPIC_PARTITION));
         lenient().when(consumer.groupMetadata()).thenReturn(groupMetadata);
-        lenient().when(transformerResolver.resolve(nullable(String.class))).thenReturn(transformer);
-        lenient().when(transformer.transform(eq(TARGET_TOPIC), any())).thenAnswer(invocation -> {
-            ConsumerRecord<String, byte[]> sourceRecord = invocation.getArgument(1);
+        lenient().when(transformer.transform(eq(RESTORE_TYPE), eq(TARGET_TOPIC), any())).thenAnswer(invocation -> {
+            ConsumerRecord<String, byte[]> sourceRecord = invocation.getArgument(2);
             return new ProducerRecord<>(
                     TARGET_TOPIC,
                     sourceRecord.partition(),
@@ -131,7 +126,7 @@ class RestoreReplicationLoopTest {
 
         restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context, false);
 
-        verify(payloadValidator, times(2)).validate(eq(pipelineProperties), any(), any());
+        verify(payloadValidator, times(2)).validate(any(), any());
         verify(producer).beginTransaction();
         verify(producer, times(2)).send(any(ProducerRecord.class));
         verify(producer).sendOffsetsToTransaction(anyMap(), eq(groupMetadata));
@@ -152,11 +147,11 @@ class RestoreReplicationLoopTest {
 
         InOrder inOrder = inOrder(producer, payloadValidator, transformer);
         inOrder.verify(producer).beginTransaction();
-        inOrder.verify(payloadValidator).validate(eq(pipelineProperties), any(), any());
-        inOrder.verify(transformer).transform(eq(TARGET_TOPIC), any());
+        inOrder.verify(payloadValidator).validate(any(), any());
+        inOrder.verify(transformer).transform(eq(RESTORE_TYPE), eq(TARGET_TOPIC), any());
         inOrder.verify(producer).send(any(ProducerRecord.class));
-        inOrder.verify(payloadValidator).validate(eq(pipelineProperties), any(), any());
-        inOrder.verify(transformer).transform(eq(TARGET_TOPIC), any());
+        inOrder.verify(payloadValidator).validate(any(), any());
+        inOrder.verify(transformer).transform(eq(RESTORE_TYPE), eq(TARGET_TOPIC), any());
         inOrder.verify(producer).send(any(ProducerRecord.class));
         inOrder.verify(producer).sendOffsetsToTransaction(anyMap(), eq(groupMetadata));
         inOrder.verify(producer).commitTransaction();
@@ -204,7 +199,7 @@ class RestoreReplicationLoopTest {
     void abortsTransactionWhenValidationFailsBeforeSend() {
         RestoreJobExecutionContext context = runningContext();
         doThrow(new RuntimeException("validation failed")).when(payloadValidator)
-                .validate(eq(pipelineProperties), any(), any());
+                .validate(any(), any());
         when(consumer.poll(any(Duration.class))).thenReturn(
                 ConsumerRecords.empty(),
                 records(record(0L), record(1L))
@@ -217,7 +212,7 @@ class RestoreReplicationLoopTest {
 
         InOrder inOrder = inOrder(producer, payloadValidator);
         inOrder.verify(producer).beginTransaction();
-        inOrder.verify(payloadValidator).validate(eq(pipelineProperties), any(), any());
+        inOrder.verify(payloadValidator).validate(any(), any());
         inOrder.verify(producer).abortTransaction();
         verify(producer, never()).send(any(ProducerRecord.class));
         verify(producer, never()).sendOffsetsToTransaction(anyMap(), any());

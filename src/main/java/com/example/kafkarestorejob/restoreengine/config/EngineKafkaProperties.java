@@ -219,9 +219,6 @@ public class EngineKafkaProperties {
         @Min(1)
         private int batchSize;
 
-        @NotBlank
-        private String type;
-
         public String getSourceTopic() {
             return sourceTopic;
         }
@@ -260,22 +257,6 @@ public class EngineKafkaProperties {
 
         public void setBatchSize(int batchSize) {
             this.batchSize = batchSize;
-        }
-
-        public String getType() {
-            return type;
-        }
-
-        public void setType(String type) {
-            this.type = type;
-        }
-
-        public String getMessageType() {
-            return type;
-        }
-
-        public void setMessageType(String messageType) {
-            this.type = messageType;
         }
     }
 }

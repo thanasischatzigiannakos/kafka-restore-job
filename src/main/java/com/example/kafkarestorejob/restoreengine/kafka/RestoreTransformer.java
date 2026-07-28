@@ -5,7 +5,9 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 
 public interface RestoreTransformer {
 
-    String messageType();
-
-    ProducerRecord<String, byte[]> transform(String targetTopic, ConsumerRecord<String, byte[]> sourceRecord);
+    ProducerRecord<String, byte[]> transform(
+            String restoreType,
+            String targetTopic,
+            ConsumerRecord<String, byte[]> sourceRecord
+    );
 }
