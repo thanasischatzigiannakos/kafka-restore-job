@@ -2,6 +2,7 @@ package com.example.kafkarestorejob.restoreengine.validation;
 
 import com.example.kafkarestorejob.restoreengine.serialization.model.ApplicationRestoreMessage;
 import com.example.kafkarestorejob.restoreengine.verification.FileReference;
+import com.example.kafkarestorejob.restoreengine.verification.S3FileExistenceVerifier;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -11,7 +12,8 @@ import org.springframework.stereotype.Component;
 public class ApplicationRestorePayloadHandler
         extends AbstractParsedPayloadHandler<ApplicationRestoreMessage> {
 
-    public ApplicationRestorePayloadHandler() {
+    public ApplicationRestorePayloadHandler(S3FileExistenceVerifier s3FileExistenceVerifier) {
+        super(s3FileExistenceVerifier);
     }
 
     @Override

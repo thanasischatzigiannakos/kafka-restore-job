@@ -22,8 +22,9 @@ import com.example.kafkarestorejob.restoreengine.config.KafkaClientConfiguration
 import com.example.kafkarestorejob.restoreengine.kafka.KafkaOffsetCalculator;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreEngineException;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreExecutionResult;
+import com.example.kafkarestorejob.restoreengine.validation.RestorePayloadHandler;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreTransformer;
-import com.example.kafkarestorejob.restoreengine.validation.RestorePayloadValidator;
+import com.example.kafkarestorejob.restoreengine.validation.RestorePayloadHandlerRegistry;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -64,7 +65,10 @@ class RestoreReplicationLoopTest {
     private KafkaProducer<String, byte[]> producer;
 
     @Mock
-    private RestorePayloadValidator payloadValidator;
+    private RestorePayloadHandlerRegistry payloadHandlerRegistry;
+
+    @Mock
+    private RestorePayloadHandler payloadHandler;
 
     @Mock
     private RestoreTransformer transformer;
@@ -79,7 +83,7 @@ class RestoreReplicationLoopTest {
         restoreReplicationLoop = new RestoreReplicationLoop(
                 kafkaClientConfiguration,
                 new KafkaOffsetCalculator(),
-                payloadValidator,
+                payloadHandlerRegistry,
                 transformer
         );
 
@@ -101,6 +105,7 @@ class RestoreReplicationLoopTest {
         lenient().when(kafkaClientConfiguration.createProducer(nullable(String.class))).thenReturn(producer);
         lenient().when(consumer.assignment()).thenReturn(java.util.Set.of(TOPIC_PARTITION));
         lenient().when(consumer.groupMetadata()).thenReturn(groupMetadata);
+        lenient().when(payloadHandlerRegistry.requireHandler(RESTORE_TYPE)).thenReturn(payloadHandler);
         lenient().when(transformer.transform(eq(RESTORE_TYPE), eq(TARGET_TOPIC), any())).thenAnswer(invocation -> {
             ConsumerRecord<String, byte[]> sourceRecord = invocation.getArgument(2);
             return new ProducerRecord<>(
@@ -126,7 +131,8 @@ class RestoreReplicationLoopTest {
 
         restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context, false);
 
-        verify(payloadValidator, times(2)).validate(any(), any());
+        verify(payloadHandlerRegistry).requireHandler(RESTORE_TYPE);
+        verify(payloadHandler, times(2)).validate(any(), any());
         verify(producer).beginTransaction();
         verify(producer, times(2)).send(any(ProducerRecord.class));
         verify(producer).sendOffsetsToTransaction(anyMap(), eq(groupMetadata));
@@ -145,12 +151,13 @@ class RestoreReplicationLoopTest {
 
         restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context, false);
 
-        InOrder inOrder = inOrder(producer, payloadValidator, transformer);
+        InOrder inOrder = inOrder(producer, payloadHandlerRegistry, payloadHandler, transformer);
+        inOrder.verify(payloadHandlerRegistry).requireHandler(RESTORE_TYPE);
         inOrder.verify(producer).beginTransaction();
-        inOrder.verify(payloadValidator).validate(any(), any());
+        inOrder.verify(payloadHandler).validate(any(), any());
         inOrder.verify(transformer).transform(eq(RESTORE_TYPE), eq(TARGET_TOPIC), any());
         inOrder.verify(producer).send(any(ProducerRecord.class));
-        inOrder.verify(payloadValidator).validate(any(), any());
+        inOrder.verify(payloadHandler).validate(any(), any());
         inOrder.verify(transformer).transform(eq(RESTORE_TYPE), eq(TARGET_TOPIC), any());
         inOrder.verify(producer).send(any(ProducerRecord.class));
         inOrder.verify(producer).sendOffsetsToTransaction(anyMap(), eq(groupMetadata));
@@ -198,7 +205,7 @@ class RestoreReplicationLoopTest {
     @Test
     void abortsTransactionWhenValidationFailsBeforeSend() {
         RestoreJobExecutionContext context = runningContext();
-        doThrow(new RuntimeException("validation failed")).when(payloadValidator)
+        doThrow(new RuntimeException("validation failed")).when(payloadHandler)
                 .validate(any(), any());
         when(consumer.poll(any(Duration.class))).thenReturn(
                 ConsumerRecords.empty(),
@@ -210,9 +217,10 @@ class RestoreReplicationLoopTest {
         assertThrows(RestoreEngineException.class,
                 () -> restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context, false));
 
-        InOrder inOrder = inOrder(producer, payloadValidator);
+        InOrder inOrder = inOrder(producer, payloadHandlerRegistry, payloadHandler);
+        inOrder.verify(payloadHandlerRegistry).requireHandler(RESTORE_TYPE);
         inOrder.verify(producer).beginTransaction();
-        inOrder.verify(payloadValidator).validate(any(), any());
+        inOrder.verify(payloadHandler).validate(any(), any());
         inOrder.verify(producer).abortTransaction();
         verify(producer, never()).send(any(ProducerRecord.class));
         verify(producer, never()).sendOffsetsToTransaction(anyMap(), any());

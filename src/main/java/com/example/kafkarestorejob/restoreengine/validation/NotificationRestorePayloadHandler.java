@@ -1,13 +1,15 @@
 package com.example.kafkarestorejob.restoreengine.validation;
 
 import com.example.kafkarestorejob.restoreengine.serialization.model.NotificationRestoreMessage;
+import com.example.kafkarestorejob.restoreengine.verification.S3FileExistenceVerifier;
 import org.springframework.stereotype.Component;
 
 @Component
 public class NotificationRestorePayloadHandler
         extends AbstractParsedPayloadHandler<NotificationRestoreMessage> {
 
-    public NotificationRestorePayloadHandler() {
+    public NotificationRestorePayloadHandler(S3FileExistenceVerifier s3FileExistenceVerifier) {
+        super(s3FileExistenceVerifier);
     }
 
     @Override
