@@ -2,7 +2,6 @@ package com.example.kafkarestorejob.restoreengine.validation;
 
 import com.example.kafkarestorejob.restoreengine.serialization.model.ApplicationRestoreMessage;
 import com.example.kafkarestorejob.restoreengine.verification.FileReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -10,10 +9,9 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class ApplicationRestorePayloadHandler
-        extends AbstractJsonRestorePayloadHandler<ApplicationRestoreMessage> {
+        extends AbstractParsedPayloadHandler<ApplicationRestoreMessage> {
 
-    public ApplicationRestorePayloadHandler(ObjectMapper objectMapper) {
-        super(objectMapper);
+    public ApplicationRestorePayloadHandler() {
     }
 
     @Override
@@ -22,8 +20,12 @@ public class ApplicationRestorePayloadHandler
     }
 
     @Override
-    protected Class<ApplicationRestoreMessage> payloadClass() {
-        return ApplicationRestoreMessage.class;
+    protected ApplicationRestoreMessage parse(byte[] payloadBytes) {
+        try {
+            return ApplicationRestoreMessage.parseFrom(payloadBytes);
+        } catch (Exception exception) {
+            throw parsingFailure(exception);
+        }
     }
 
     @Override

@@ -2,7 +2,6 @@ package com.example.kafkarestorejob.restoreengine.validation;
 
 import com.example.kafkarestorejob.restoreengine.serialization.model.AbuseRestoreMessage;
 import com.example.kafkarestorejob.restoreengine.verification.FileReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -10,10 +9,9 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class AbuseRestorePayloadHandler
-        extends AbstractJsonRestorePayloadHandler<AbuseRestoreMessage> {
+        extends AbstractParsedPayloadHandler<AbuseRestoreMessage> {
 
-    public AbuseRestorePayloadHandler(ObjectMapper objectMapper) {
-        super(objectMapper);
+    public AbuseRestorePayloadHandler() {
     }
 
     @Override
@@ -22,8 +20,12 @@ public class AbuseRestorePayloadHandler
     }
 
     @Override
-    protected Class<AbuseRestoreMessage> payloadClass() {
-        return AbuseRestoreMessage.class;
+    protected AbuseRestoreMessage parse(byte[] payloadBytes) {
+        try {
+            return AbuseRestoreMessage.parseFrom(payloadBytes);
+        } catch (Exception exception) {
+            throw parsingFailure(exception);
+        }
     }
 
     @Override

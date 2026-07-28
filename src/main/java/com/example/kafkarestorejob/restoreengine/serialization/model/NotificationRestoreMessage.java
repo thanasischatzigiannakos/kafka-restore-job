@@ -5,6 +5,10 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class NotificationRestoreMessage {
 
+    public static NotificationRestoreMessage parseFrom(byte[] payloadBytes) {
+        return JsonPayloadParser.parse(payloadBytes, NotificationRestoreMessage.class);
+    }
+
     private String messageId;
     private String entityType;
     private String recipientId;

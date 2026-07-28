@@ -1,15 +1,13 @@
 package com.example.kafkarestorejob.restoreengine.validation;
 
 import com.example.kafkarestorejob.restoreengine.serialization.model.NotificationRestoreMessage;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Component;
 
 @Component
 public class NotificationRestorePayloadHandler
-        extends AbstractJsonRestorePayloadHandler<NotificationRestoreMessage> {
+        extends AbstractParsedPayloadHandler<NotificationRestoreMessage> {
 
-    public NotificationRestorePayloadHandler(ObjectMapper objectMapper) {
-        super(objectMapper);
+    public NotificationRestorePayloadHandler() {
     }
 
     @Override
@@ -18,8 +16,12 @@ public class NotificationRestorePayloadHandler
     }
 
     @Override
-    protected Class<NotificationRestoreMessage> payloadClass() {
-        return NotificationRestoreMessage.class;
+    protected NotificationRestoreMessage parse(byte[] payloadBytes) {
+        try {
+            return NotificationRestoreMessage.parseFrom(payloadBytes);
+        } catch (Exception exception) {
+            throw parsingFailure(exception);
+        }
     }
 
     @Override

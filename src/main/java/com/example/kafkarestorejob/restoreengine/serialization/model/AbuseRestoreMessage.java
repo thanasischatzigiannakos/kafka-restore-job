@@ -6,6 +6,10 @@ import java.util.List;
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class AbuseRestoreMessage {
 
+    public static AbuseRestoreMessage parseFrom(byte[] payloadBytes) {
+        return JsonPayloadParser.parse(payloadBytes, AbuseRestoreMessage.class);
+    }
+
     private String messageId;
     private String caseId;
     private AbusePayload payload;

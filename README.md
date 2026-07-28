@@ -19,7 +19,7 @@ read restoreType from the selected pipeline key
     ↓
 resolve one RestorePayloadHandler for that restoreType
     ↓
-unpack JSON payload inside the handler
+parse payload bytes inside the handler via parseFrom(byte[])
     ↓
 validate that the payload matches the expected logical type
     ↓

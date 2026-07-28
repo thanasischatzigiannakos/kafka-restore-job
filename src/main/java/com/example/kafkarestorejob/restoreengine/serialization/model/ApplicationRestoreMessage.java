@@ -6,6 +6,10 @@ import java.util.List;
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class ApplicationRestoreMessage {
 
+    public static ApplicationRestoreMessage parseFrom(byte[] payloadBytes) {
+        return JsonPayloadParser.parse(payloadBytes, ApplicationRestoreMessage.class);
+    }
+
     private String messageId;
     private String entityType;
     private Integer sequence;
