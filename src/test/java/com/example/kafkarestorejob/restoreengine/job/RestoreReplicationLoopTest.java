@@ -19,7 +19,6 @@ import static org.mockito.Mockito.when;
 
 import com.example.kafkarestorejob.restoreengine.config.EngineKafkaProperties;
 import com.example.kafkarestorejob.restoreengine.config.KafkaClientConfiguration;
-import com.example.kafkarestorejob.restoreengine.kafka.KafkaOffsetCalculator;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreEngineException;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreExecutionResult;
 import com.example.kafkarestorejob.restoreengine.validation.RestorePayloadHandler;
@@ -82,7 +81,6 @@ class RestoreReplicationLoopTest {
     void setUp() {
         restoreReplicationLoop = new RestoreReplicationLoop(
                 kafkaClientConfiguration,
-                new KafkaOffsetCalculator(),
                 payloadHandlerRegistry,
                 transformer
         );
@@ -120,7 +118,7 @@ class RestoreReplicationLoopTest {
     }
 
     @Test
-    void commitsBatchInTransactionalOrder() {
+    void commitsRecordsInTransactionalOrder() {
         RestoreJobExecutionContext context = runningContext();
         when(consumer.poll(any(Duration.class))).thenReturn(
                 ConsumerRecords.empty(),
@@ -133,10 +131,10 @@ class RestoreReplicationLoopTest {
 
         verify(payloadHandlerRegistry).requireHandler(RESTORE_TYPE);
         verify(payloadHandler, times(2)).validate(any(), any());
-        verify(producer).beginTransaction();
+        verify(producer, times(2)).beginTransaction();
         verify(producer, times(2)).send(any(ProducerRecord.class));
-        verify(producer).sendOffsetsToTransaction(anyMap(), eq(groupMetadata));
-        verify(producer).commitTransaction();
+        verify(producer, times(2)).sendOffsetsToTransaction(anyMap(), eq(groupMetadata));
+        verify(producer, times(2)).commitTransaction();
     }
 
     @Test
@@ -157,6 +155,9 @@ class RestoreReplicationLoopTest {
         inOrder.verify(payloadHandler).validate(any(), any());
         inOrder.verify(transformer).transform(eq(RESTORE_TYPE), eq(TARGET_TOPIC), any());
         inOrder.verify(producer).send(any(ProducerRecord.class));
+        inOrder.verify(producer).sendOffsetsToTransaction(anyMap(), eq(groupMetadata));
+        inOrder.verify(producer).commitTransaction();
+        inOrder.verify(producer).beginTransaction();
         inOrder.verify(payloadHandler).validate(any(), any());
         inOrder.verify(transformer).transform(eq(RESTORE_TYPE), eq(TARGET_TOPIC), any());
         inOrder.verify(producer).send(any(ProducerRecord.class));
@@ -263,7 +264,7 @@ class RestoreReplicationLoopTest {
     }
 
     @Test
-    void doesNotCommitPartialBatchOffsets() throws Exception {
+    void doesNotCommitLaterRecordOffsetWhenSecondRecordFails() throws Exception {
         RestoreJobExecutionContext context = runningContext();
         java.util.concurrent.Future<?> firstFuture = mock(java.util.concurrent.Future.class);
         when(firstFuture.get()).thenReturn(null);
@@ -283,7 +284,9 @@ class RestoreReplicationLoopTest {
         assertThrows(RestoreEngineException.class,
                 () -> restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context, false));
 
-        verify(producer, never()).sendOffsetsToTransaction(anyMap(), any());
+        verify(producer, times(1)).sendOffsetsToTransaction(anyMap(), eq(groupMetadata));
+        verify(producer, times(1)).commitTransaction();
+        verify(producer, times(1)).abortTransaction();
     }
 
     @Test
@@ -301,7 +304,7 @@ class RestoreReplicationLoopTest {
         verify(producer, times(2)).send(any(ProducerRecord.class));
         ArgumentCaptor<Map<TopicPartition, OffsetAndMetadata>> offsetsCaptor =
                 ArgumentCaptor.forClass(Map.class);
-        verify(producer).sendOffsetsToTransaction(offsetsCaptor.capture(), eq(groupMetadata));
+        verify(producer, times(2)).sendOffsetsToTransaction(offsetsCaptor.capture(), eq(groupMetadata));
         assertEquals(2L, offsetsCaptor.getValue().get(TOPIC_PARTITION).offset());
         assertEquals(2L, result.recordsRestored());
         assertEquals(RestoreJobStatus.FINALIZING, context.getStatus());
@@ -379,7 +382,7 @@ class RestoreReplicationLoopTest {
     }
 
     @Test
-    void createsMultipleTransactionsForMultiplePollBatches() {
+    void createsOneTransactionPerRestoredRecord() {
         RestoreJobExecutionContext context = runningContext();
         when(consumer.poll(any(Duration.class))).thenReturn(
                 ConsumerRecords.empty(),
@@ -391,8 +394,9 @@ class RestoreReplicationLoopTest {
 
         RestoreExecutionResult result = restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context, false);
 
-        verify(producer, times(2)).beginTransaction();
-        assertEquals(2, result.batchesCommitted());
+        verify(producer, times(3)).beginTransaction();
+        verify(producer, times(3)).commitTransaction();
+        assertEquals(3, result.batchesCommitted());
         assertEquals(3L, result.recordsRestored());
     }
 

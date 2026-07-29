@@ -2,7 +2,6 @@ package com.example.kafkarestorejob.restoreengine.job;
 
 import com.example.kafkarestorejob.restoreengine.config.EngineKafkaProperties;
 import com.example.kafkarestorejob.restoreengine.config.KafkaClientConfiguration;
-import com.example.kafkarestorejob.restoreengine.kafka.KafkaOffsetCalculator;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreEngineException;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreExecutionResult;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreTransformer;
@@ -36,18 +35,15 @@ public class RestoreReplicationLoop {
     private static final Logger log = LoggerFactory.getLogger(RestoreReplicationLoop.class);
 
     private final KafkaClientConfiguration kafkaClientConfiguration;
-    private final KafkaOffsetCalculator offsetCalculator;
     private final RestorePayloadHandlerRegistry payloadHandlerRegistry;
     private final RestoreTransformer transformer;
 
     public RestoreReplicationLoop(
             KafkaClientConfiguration kafkaClientConfiguration,
-            KafkaOffsetCalculator offsetCalculator,
             RestorePayloadHandlerRegistry payloadHandlerRegistry,
             RestoreTransformer transformer
     ) {
         this.kafkaClientConfiguration = kafkaClientConfiguration;
-        this.offsetCalculator = offsetCalculator;
         this.payloadHandlerRegistry = payloadHandlerRegistry;
         this.transformer = transformer;
     }
@@ -81,7 +77,7 @@ public class RestoreReplicationLoop {
                 payloadHandlerRegistry.requireHandler(restoreType);
 
         int emptyPolls = 0;
-        int committedBatches = 0;
+        int committedTransactions = 0;
         long restoredRecords = 0L;
 
         try (
@@ -114,6 +110,7 @@ public class RestoreReplicationLoop {
                 PollBatchOutcome pollBatchOutcome = pollAndRestoreBatch(
                         consumer,
                         producer,
+                        consumer.groupMetadata(),
                         context,
                         restoreType,
                         pipeline,
@@ -125,25 +122,25 @@ public class RestoreReplicationLoop {
                 );
 
                 emptyPolls = pollBatchOutcome.emptyPolls();
-                committedBatches += pollBatchOutcome.committedBatches();
+                committedTransactions += pollBatchOutcome.committedTransactions();
                 restoredRecords += pollBatchOutcome.restoredRecords();
             }
         }
 
         log.info(
-                "Restore finished for jobId={} restoreType={} sourceTopic={} targetTopic={} batchesCommitted={} recordsRestored={}",
+                "Restore finished for jobId={} restoreType={} sourceTopic={} targetTopic={} committedTransactions={} recordsRestored={}",
                 context.getJobId(),
                 restoreType,
                 pipeline.getSourceTopic(),
                 pipeline.getTargetTopic(),
-                committedBatches,
+                committedTransactions,
                 restoredRecords
         );
 
         return createResult(
                 restoreType,
                 pipeline,
-                committedBatches,
+                committedTransactions,
                 restoredRecords,
                 emptyPolls
         );
@@ -152,6 +149,7 @@ public class RestoreReplicationLoop {
     private PollBatchOutcome pollAndRestoreBatch(
             KafkaConsumer<String, byte[]> consumer,
             KafkaProducer<String, byte[]> producer,
+            ConsumerGroupMetadata groupMetadata,
             RestoreJobExecutionContext context,
             String restoreType,
             EngineKafkaProperties.PipelineProperties pipeline,
@@ -169,21 +167,15 @@ public class RestoreReplicationLoop {
         }
 
         loopState.resetEmptyPolls();
-        List<ConsumerRecord<String, byte[]>> recordsToRestore =
-                filterRecordsWithinBoundary(polledRecords, restoreEndOffsets);
-        if (recordsToRestore.isEmpty()) {
-            return handleEmptyRestoreBatch(context, restoreEndOffsets, loopState, polledRecords.count());
-        }
-
-        return commitRestorableBatch(
+        return restorePolledRecords(
                 producer,
-                consumer.groupMetadata(),
+                groupMetadata,
                 context,
                 restoreType,
                 pipeline,
-                restoreEndOffsets,
                 loopState,
-                recordsToRestore,
+                polledRecords,
+                restoreEndOffsets,
                 transformer,
                 payloadHandler
         );
@@ -204,69 +196,65 @@ public class RestoreReplicationLoop {
         return PollBatchOutcome.empty(emptyPolls);
     }
 
-    private PollBatchOutcome handleEmptyRestoreBatch(
-            RestoreJobExecutionContext context,
-            Map<TopicPartition, Long> restoreEndOffsets,
-            RestoreLoopState loopState,
-            int polledRecordCount
-    ) {
-        if (hasReachedRestoreBoundary(loopState.getRestoredPositions(), restoreEndOffsets)) {
-            markFinalizing(context);
-            log.info(
-                    "Restore job {} exhausted the captured boundary without additional restorable records",
-                    context.getJobId()
-            );
-            loopState.finish();
-            return PollBatchOutcome.noCommit(loopState.getEmptyPolls());
-        }
-
-        log.info(
-                "Ignoring {} records at or beyond the restore boundary for jobId={}",
-                polledRecordCount,
-                context.getJobId()
-        );
-        return PollBatchOutcome.noCommit(loopState.getEmptyPolls());
-    }
-
-    private PollBatchOutcome commitRestorableBatch(
+    private PollBatchOutcome restorePolledRecords(
             KafkaProducer<String, byte[]> producer,
             ConsumerGroupMetadata groupMetadata,
             RestoreJobExecutionContext context,
             String restoreType,
             EngineKafkaProperties.PipelineProperties pipeline,
-            Map<TopicPartition, Long> restoreEndOffsets,
             RestoreLoopState loopState,
-            List<ConsumerRecord<String, byte[]>> recordsToRestore,
+            ConsumerRecords<String, byte[]> polledRecords,
+            Map<TopicPartition, Long> restoreEndOffsets,
             RestoreTransformer transformer,
             RestorePayloadHandler payloadHandler
     ) {
-        Map<TopicPartition, OffsetAndMetadata> offsets =
-                offsetCalculator.calculateOffsets(recordsToRestore);
-        Map<TopicPartition, Long> nextRestoredPositions = nextRestoredPositions(
-                loopState.getRestoredPositions(),
-                offsets
-        );
-        boolean finalBatch = hasReachedRestoreBoundary(nextRestoredPositions, restoreEndOffsets);
+        int ignoredRecords = 0;
+        int restoredRecords = 0;
+        int committedTransactions = 0;
 
-        restoreBatch(
-                producer,
-                groupMetadata,
-                recordsToRestore,
-                offsets,
-                context,
-                restoreType,
-                pipeline,
-                finalBatch,
-                transformer,
-                payloadHandler
-        );
+        for (ConsumerRecord<String, byte[]> sourceRecord : polledRecords) {
+            TopicPartition topicPartition = new TopicPartition(sourceRecord.topic(), sourceRecord.partition());
+            Long endOffset = restoreEndOffsets.get(topicPartition);
+            if (endOffset == null || sourceRecord.offset() >= endOffset) {
+                ignoredRecords++;
+                continue;
+            }
 
-        loopState.updateRestoredPositions(nextRestoredPositions);
-        loopState.recordCommittedBatch(finalBatch);
-        logCommittedBatch(context, loopState.getCommittedBatches(), recordsToRestore.size(), finalBatch);
+            Map<TopicPartition, OffsetAndMetadata> offsets = offsetsForRecord(sourceRecord);
+            Map<TopicPartition, Long> nextRestoredPositions = nextRestoredPositions(
+                    loopState.getRestoredPositions(),
+                    offsets
+            );
+            boolean finalRecord = hasReachedRestoreBoundary(nextRestoredPositions, restoreEndOffsets);
+
+            restoreRecordTransaction(
+                    producer,
+                    groupMetadata,
+                    sourceRecord,
+                    offsets,
+                    context,
+                    restoreType,
+                    pipeline,
+                    finalRecord,
+                    transformer,
+                    payloadHandler
+            );
+
+            loopState.updateRestoredPositions(nextRestoredPositions);
+            loopState.recordCommittedTransaction(finalRecord);
+            restoredRecords++;
+            committedTransactions++;
+            logCommittedRecord(context, loopState.getCommittedTransactions(), sourceRecord, finalRecord);
+        }
+
+        if (restoredRecords == 0) {
+            return handleEmptyRestorePoll(context, restoreEndOffsets, loopState, ignoredRecords);
+        }
+
         return PollBatchOutcome.committed(
                 loopState.getEmptyPolls(),
-                recordsToRestore.size()
+                committedTransactions,
+                restoredRecords
         );
     }
 
@@ -317,18 +305,20 @@ public class RestoreReplicationLoop {
         );
     }
 
-    private void logCommittedBatch(
+    private void logCommittedRecord(
             RestoreJobExecutionContext context,
-            int committedBatches,
-            int recordCount,
-            boolean finalBatch
+            int committedTransactions,
+            ConsumerRecord<String, byte[]> sourceRecord,
+            boolean finalRecord
     ) {
         log.info(
-                "Committed restore batch jobId={} batchNumber={} records={} finalBatch={}",
+                "Committed restore record jobId={} transactionNumber={} topic={} partition={} offset={} finalRecord={}",
                 context.getJobId(),
-                committedBatches,
-                recordCount,
-                finalBatch
+                committedTransactions,
+                sourceRecord.topic(),
+                sourceRecord.partition(),
+                sourceRecord.offset(),
+                finalRecord
         );
     }
 
@@ -352,35 +342,37 @@ public class RestoreReplicationLoop {
         );
     }
 
-    private void restoreBatch(
+    private RestoreEngineException restoreBatchFailure(Exception exception) {
+        return new RestoreEngineException("Restore record failed", exception);
+    }
+
+    private void restoreRecordTransaction(
             KafkaProducer<String, byte[]> producer,
             ConsumerGroupMetadata groupMetadata,
-            List<ConsumerRecord<String, byte[]>> records,
+            ConsumerRecord<String, byte[]> sourceRecord,
             Map<TopicPartition, OffsetAndMetadata> offsets,
             RestoreJobExecutionContext context,
             String restoreType,
             EngineKafkaProperties.PipelineProperties pipeline,
-            boolean finalBatch,
+            boolean finalRecord,
             RestoreTransformer transformer,
             RestorePayloadHandler payloadHandler
     ) {
         producer.beginTransaction();
         try {
-            for (ConsumerRecord<String, byte[]> sourceRecord : records) {
-                context.throwIfCancellationRequested();
-                payloadHandler.validate(
-                        buildValidationContext(context, restoreType, sourceRecord),
-                        sourceRecord.value()
-                );
-                ProducerRecord<String, byte[]> targetRecord =
-                        transformer.transform(restoreType, pipeline.getTargetTopic(), sourceRecord);
+            context.throwIfCancellationRequested();
+            payloadHandler.validate(
+                    buildValidationContext(context, restoreType, sourceRecord),
+                    sourceRecord.value()
+            );
+            ProducerRecord<String, byte[]> targetRecord =
+                    transformer.transform(restoreType, pipeline.getTargetTopic(), sourceRecord);
 
-                producer.send(targetRecord).get();
-            }
+            producer.send(targetRecord).get();
 
             producer.sendOffsetsToTransaction(offsets, groupMetadata);
 
-            if (finalBatch) {
+            if (finalRecord) {
                 if (!context.tryMarkFinalizing()) {
                     handleFinalizingTransitionFailure(context);
                 }
@@ -393,14 +385,40 @@ public class RestoreReplicationLoop {
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             abortTransactionSafely(producer, exception);
-            throw new RestoreEngineException("Restore batch interrupted", exception);
+            throw new RestoreEngineException("Restore record interrupted", exception);
         } catch (RestoreJobCancellationException exception) {
             abortTransactionSafely(producer, exception);
             throw exception;
         } catch (RuntimeException | ExecutionException exception) {
             abortTransactionSafely(producer, exception);
-            throw new RestoreEngineException("Restore batch failed", exception);
+            throw restoreBatchFailure(exception);
         }
+    }
+
+    private PollBatchOutcome handleEmptyRestorePoll(
+            RestoreJobExecutionContext context,
+            Map<TopicPartition, Long> restoreEndOffsets,
+            RestoreLoopState loopState,
+            int ignoredRecordCount
+    ) {
+        if (hasReachedRestoreBoundary(loopState.getRestoredPositions(), restoreEndOffsets)) {
+            markFinalizing(context);
+            log.info(
+                    "Restore job {} exhausted the captured boundary without additional restorable records",
+                    context.getJobId()
+            );
+            loopState.finish();
+            return PollBatchOutcome.noCommit(loopState.getEmptyPolls());
+        }
+
+        if (ignoredRecordCount > 0) {
+            log.info(
+                    "Ignoring {} records at or beyond the restore boundary for jobId={}",
+                    ignoredRecordCount,
+                    context.getJobId()
+            );
+        }
+        return PollBatchOutcome.noCommit(loopState.getEmptyPolls());
     }
 
     private RestoreRecordValidationContext buildValidationContext(
@@ -555,19 +573,13 @@ public class RestoreReplicationLoop {
         return Map.copyOf(consumer.endOffsets(assignment));
     }
 
-    private List<ConsumerRecord<String, byte[]>> filterRecordsWithinBoundary(
-            ConsumerRecords<String, byte[]> records,
-            Map<TopicPartition, Long> restoreEndOffsets
+    private Map<TopicPartition, OffsetAndMetadata> offsetsForRecord(
+            ConsumerRecord<String, byte[]> sourceRecord
     ) {
-        List<ConsumerRecord<String, byte[]>> filteredRecords = new ArrayList<>();
-        for (ConsumerRecord<String, byte[]> record : records) {
-            TopicPartition topicPartition = new TopicPartition(record.topic(), record.partition());
-            Long endOffset = restoreEndOffsets.get(topicPartition);
-            if (endOffset != null && record.offset() < endOffset) {
-                filteredRecords.add(record);
-            }
-        }
-        return filteredRecords;
+        return Map.of(
+                new TopicPartition(sourceRecord.topic(), sourceRecord.partition()),
+                new OffsetAndMetadata(sourceRecord.offset() + 1)
+        );
     }
 
     private Map<TopicPartition, Long> toPositions(
@@ -625,7 +637,7 @@ public class RestoreReplicationLoop {
 
         private Map<TopicPartition, Long> restoredPositions;
         private int emptyPolls;
-        private int committedBatches;
+        private int committedTransactions;
         private boolean finished;
 
         private RestoreLoopState(Map<TopicPartition, Long> restoredPositions) {
@@ -640,8 +652,8 @@ public class RestoreReplicationLoop {
             return emptyPolls;
         }
 
-        private int getCommittedBatches() {
-            return committedBatches;
+        private int getCommittedTransactions() {
+            return committedTransactions;
         }
 
         private boolean isFinished() {
@@ -661,9 +673,9 @@ public class RestoreReplicationLoop {
             restoredPositions = nextRestoredPositions;
         }
 
-        private void recordCommittedBatch(boolean finalBatch) {
-            committedBatches++;
-            finished = finalBatch;
+        private void recordCommittedTransaction(boolean finalRecord) {
+            committedTransactions++;
+            finished = finalRecord;
         }
 
         private void finish() {
@@ -673,7 +685,7 @@ public class RestoreReplicationLoop {
 
     private record PollBatchOutcome(
             int emptyPolls,
-            int committedBatches,
+            int committedTransactions,
             long restoredRecords
     ) {
 
