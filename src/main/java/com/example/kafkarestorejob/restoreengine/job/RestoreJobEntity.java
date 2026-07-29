@@ -47,7 +47,7 @@ public class RestoreJobEntity {
 
     private String errorMessage;
 
-    private Integer batchesCommitted;
+    private Integer committedTransactions;
 
     private Long recordsRestored;
 
@@ -155,12 +155,12 @@ public class RestoreJobEntity {
         this.errorMessage = errorMessage;
     }
 
-    public Integer getBatchesCommitted() {
-        return batchesCommitted;
+    public Integer getCommittedTransactions() {
+        return committedTransactions;
     }
 
-    public void setBatchesCommitted(Integer batchesCommitted) {
-        this.batchesCommitted = batchesCommitted;
+    public void setCommittedTransactions(Integer committedTransactions) {
+        this.committedTransactions = committedTransactions;
     }
 
     public Long getRecordsRestored() {

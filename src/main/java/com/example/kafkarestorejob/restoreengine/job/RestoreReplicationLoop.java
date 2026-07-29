@@ -5,8 +5,9 @@ import com.example.kafkarestorejob.restoreengine.config.KafkaClientConfiguration
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreEngineException;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreExecutionResult;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreTransformer;
-import com.example.kafkarestorejob.restoreengine.validation.RestorePayloadHandler;
-import com.example.kafkarestorejob.restoreengine.validation.RestorePayloadHandlerRegistry;
+import com.example.kafkarestorejob.restoreengine.validation.MessageHandler;
+import com.example.kafkarestorejob.restoreengine.validation.MessageHandlerRegistry;
+import com.example.kafkarestorejob.restoreengine.validation.MessageTypeMismatchException;
 import com.example.kafkarestorejob.restoreengine.validation.RestoreRecordValidationContext;
 import java.time.Duration;
 import java.time.Instant;
@@ -35,16 +36,16 @@ public class RestoreReplicationLoop {
     private static final Logger log = LoggerFactory.getLogger(RestoreReplicationLoop.class);
 
     private final KafkaClientConfiguration kafkaClientConfiguration;
-    private final RestorePayloadHandlerRegistry payloadHandlerRegistry;
+    private final MessageHandlerRegistry messageHandlerRegistry;
     private final RestoreTransformer transformer;
 
     public RestoreReplicationLoop(
             KafkaClientConfiguration kafkaClientConfiguration,
-            RestorePayloadHandlerRegistry payloadHandlerRegistry,
+            MessageHandlerRegistry messageHandlerRegistry,
             RestoreTransformer transformer
     ) {
         this.kafkaClientConfiguration = kafkaClientConfiguration;
-        this.payloadHandlerRegistry = payloadHandlerRegistry;
+        this.messageHandlerRegistry = messageHandlerRegistry;
         this.transformer = transformer;
     }
 
@@ -73,8 +74,8 @@ public class RestoreReplicationLoop {
     ) {
         EngineKafkaProperties engineKafkaProperties =
                 kafkaClientConfiguration.getEngineKafkaProperties();
-        RestorePayloadHandler payloadHandler =
-                payloadHandlerRegistry.requireHandler(restoreType);
+        MessageHandler messageHandler =
+                messageHandlerRegistry.requireHandler(restoreType);
 
         int emptyPolls = 0;
         int committedTransactions = 0;
@@ -107,7 +108,7 @@ public class RestoreReplicationLoop {
 
             RestoreLoopState loopState = new RestoreLoopState(restoredPositions);
             while (!loopState.isFinished()) {
-                PollBatchOutcome pollBatchOutcome = pollAndRestoreBatch(
+                PollOutcome pollOutcome = pollAndRestoreRecords(
                         consumer,
                         producer,
                         consumer.groupMetadata(),
@@ -118,12 +119,12 @@ public class RestoreReplicationLoop {
                         engineKafkaProperties,
                         loopState,
                         transformer,
-                        payloadHandler
+                        messageHandler
                 );
 
-                emptyPolls = pollBatchOutcome.emptyPolls();
-                committedTransactions += pollBatchOutcome.committedTransactions();
-                restoredRecords += pollBatchOutcome.restoredRecords();
+                emptyPolls = pollOutcome.emptyPolls();
+                committedTransactions += pollOutcome.committedTransactions();
+                restoredRecords += pollOutcome.restoredRecords();
             }
         }
 
@@ -146,7 +147,7 @@ public class RestoreReplicationLoop {
         );
     }
 
-    private PollBatchOutcome pollAndRestoreBatch(
+    private PollOutcome pollAndRestoreRecords(
             KafkaConsumer<String, byte[]> consumer,
             KafkaProducer<String, byte[]> producer,
             ConsumerGroupMetadata groupMetadata,
@@ -157,7 +158,7 @@ public class RestoreReplicationLoop {
             EngineKafkaProperties engineKafkaProperties,
             RestoreLoopState loopState,
             RestoreTransformer transformer,
-            RestorePayloadHandler payloadHandler
+            MessageHandler messageHandler
     ) {
         context.throwIfCancellationRequested();
         ConsumerRecords<String, byte[]> polledRecords =
@@ -177,11 +178,11 @@ public class RestoreReplicationLoop {
                 polledRecords,
                 restoreEndOffsets,
                 transformer,
-                payloadHandler
+                messageHandler
         );
     }
 
-    private PollBatchOutcome handleEmptyPoll(
+    private PollOutcome handleEmptyPoll(
             RestoreJobExecutionContext context,
             EngineKafkaProperties engineKafkaProperties,
             RestoreLoopState loopState
@@ -193,10 +194,10 @@ public class RestoreReplicationLoop {
                             + context.getJobId()
             );
         }
-        return PollBatchOutcome.empty(emptyPolls);
+        return PollOutcome.empty(emptyPolls);
     }
 
-    private PollBatchOutcome restorePolledRecords(
+    private PollOutcome restorePolledRecords(
             KafkaProducer<String, byte[]> producer,
             ConsumerGroupMetadata groupMetadata,
             RestoreJobExecutionContext context,
@@ -206,10 +207,11 @@ public class RestoreReplicationLoop {
             ConsumerRecords<String, byte[]> polledRecords,
             Map<TopicPartition, Long> restoreEndOffsets,
             RestoreTransformer transformer,
-            RestorePayloadHandler payloadHandler
+            MessageHandler messageHandler
     ) {
         int ignoredRecords = 0;
         int restoredRecords = 0;
+        int skippedTypeMismatches = 0;
         int committedTransactions = 0;
 
         for (ConsumerRecord<String, byte[]> sourceRecord : polledRecords) {
@@ -227,7 +229,7 @@ public class RestoreReplicationLoop {
             );
             boolean finalRecord = hasReachedRestoreBoundary(nextRestoredPositions, restoreEndOffsets);
 
-            restoreRecordTransaction(
+            RecordTransactionOutcome transactionOutcome = restoreRecordTransaction(
                     producer,
                     groupMetadata,
                     sourceRecord,
@@ -237,21 +239,38 @@ public class RestoreReplicationLoop {
                     pipeline,
                     finalRecord,
                     transformer,
-                    payloadHandler
+                    messageHandler
             );
 
             loopState.updateRestoredPositions(nextRestoredPositions);
             loopState.recordCommittedTransaction(finalRecord);
-            restoredRecords++;
+            if (transactionOutcome == RecordTransactionOutcome.RESTORED) {
+                restoredRecords++;
+            } else {
+                skippedTypeMismatches++;
+            }
             committedTransactions++;
-            logCommittedRecord(context, loopState.getCommittedTransactions(), sourceRecord, finalRecord);
+            logCommittedRecord(
+                    context,
+                    loopState.getCommittedTransactions(),
+                    sourceRecord,
+                    finalRecord,
+                    transactionOutcome
+            );
         }
 
         if (restoredRecords == 0) {
-            return handleEmptyRestorePoll(context, restoreEndOffsets, loopState, ignoredRecords);
+            return handleEmptyRestorePoll(
+                    context,
+                    restoreEndOffsets,
+                    loopState,
+                    ignoredRecords,
+                    skippedTypeMismatches,
+                    committedTransactions
+            );
         }
 
-        return PollBatchOutcome.committed(
+        return PollOutcome.committed(
                 loopState.getEmptyPolls(),
                 committedTransactions,
                 restoredRecords
@@ -309,23 +328,25 @@ public class RestoreReplicationLoop {
             RestoreJobExecutionContext context,
             int committedTransactions,
             ConsumerRecord<String, byte[]> sourceRecord,
-            boolean finalRecord
+            boolean finalRecord,
+            RecordTransactionOutcome transactionOutcome
     ) {
         log.info(
-                "Committed restore record jobId={} transactionNumber={} topic={} partition={} offset={} finalRecord={}",
+                "Committed restore transaction jobId={} transactionNumber={} topic={} partition={} offset={} finalRecord={} outcome={}",
                 context.getJobId(),
                 committedTransactions,
                 sourceRecord.topic(),
                 sourceRecord.partition(),
                 sourceRecord.offset(),
-                finalRecord
+                finalRecord,
+                transactionOutcome
         );
     }
 
     private RestoreExecutionResult createResult(
             String restoreType,
             EngineKafkaProperties.PipelineProperties pipeline,
-            int committedBatches,
+            int committedTransactions,
             long restoredRecords,
             int emptyPolls
     ) {
@@ -336,17 +357,17 @@ public class RestoreReplicationLoop {
                 pipeline.getGroupId(),
                 pipeline.getTransactionalId(),
                 restoreType,
-                committedBatches,
+                committedTransactions,
                 restoredRecords,
                 emptyPolls
         );
     }
 
-    private RestoreEngineException restoreBatchFailure(Exception exception) {
+    private RestoreEngineException restoreRecordFailure(Exception exception) {
         return new RestoreEngineException("Restore record failed", exception);
     }
 
-    private void restoreRecordTransaction(
+    private RecordTransactionOutcome restoreRecordTransaction(
             KafkaProducer<String, byte[]> producer,
             ConsumerGroupMetadata groupMetadata,
             ConsumerRecord<String, byte[]> sourceRecord,
@@ -356,32 +377,33 @@ public class RestoreReplicationLoop {
             EngineKafkaProperties.PipelineProperties pipeline,
             boolean finalRecord,
             RestoreTransformer transformer,
-            RestorePayloadHandler payloadHandler
+            MessageHandler messageHandler
     ) {
         producer.beginTransaction();
         try {
             context.throwIfCancellationRequested();
-            payloadHandler.validate(
-                    buildValidationContext(context, restoreType, sourceRecord),
-                    sourceRecord.value()
+            messageHandler.validate(
+                    sourceRecord,
+                    buildValidationContext(context, restoreType, sourceRecord)
             );
             ProducerRecord<String, byte[]> targetRecord =
                     transformer.transform(restoreType, pipeline.getTargetTopic(), sourceRecord);
 
             producer.send(targetRecord).get();
-
-            producer.sendOffsetsToTransaction(offsets, groupMetadata);
-
-            if (finalRecord) {
-                if (!context.tryMarkFinalizing()) {
-                    handleFinalizingTransitionFailure(context);
-                }
-                log.info("Restore job {} entered FINALIZING before final commit", context.getJobId());
-            }
-
-            // If commitTransaction() is ambiguous due to a network failure, this execution fails
-            // and a future restart must continue with a new producer instance for the same stable transactional.id.
-            producer.commitTransaction();
+            commitRecordOffsetTransaction(producer, groupMetadata, offsets, context, finalRecord);
+            return RecordTransactionOutcome.RESTORED;
+        } catch (MessageTypeMismatchException exception) {
+            log.warn(
+                    "Skipping record due to payload type mismatch jobId={} restoreType={} topic={} partition={} offset={} reason={}",
+                    context.getJobId(),
+                    restoreType,
+                    sourceRecord.topic(),
+                    sourceRecord.partition(),
+                    sourceRecord.offset(),
+                    exception.getMessage()
+            );
+            commitRecordOffsetTransaction(producer, groupMetadata, offsets, context, finalRecord);
+            return RecordTransactionOutcome.SKIPPED_TYPE_MISMATCH;
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             abortTransactionSafely(producer, exception);
@@ -391,15 +413,38 @@ public class RestoreReplicationLoop {
             throw exception;
         } catch (RuntimeException | ExecutionException exception) {
             abortTransactionSafely(producer, exception);
-            throw restoreBatchFailure(exception);
+            throw restoreRecordFailure(exception);
         }
     }
 
-    private PollBatchOutcome handleEmptyRestorePoll(
+    private void commitRecordOffsetTransaction(
+            KafkaProducer<String, byte[]> producer,
+            ConsumerGroupMetadata groupMetadata,
+            Map<TopicPartition, OffsetAndMetadata> offsets,
+            RestoreJobExecutionContext context,
+            boolean finalRecord
+    ) {
+        producer.sendOffsetsToTransaction(offsets, groupMetadata);
+
+        if (finalRecord) {
+            if (!context.tryMarkFinalizing()) {
+                handleFinalizingTransitionFailure(context);
+            }
+            log.info("Restore job {} entered FINALIZING before final commit", context.getJobId());
+        }
+
+        // If commitTransaction() is ambiguous due to a network failure, this execution fails
+        // and a future restart must continue with a new producer instance for the same stable transactional.id.
+        producer.commitTransaction();
+    }
+
+    private PollOutcome handleEmptyRestorePoll(
             RestoreJobExecutionContext context,
             Map<TopicPartition, Long> restoreEndOffsets,
             RestoreLoopState loopState,
-            int ignoredRecordCount
+            int ignoredRecordCount,
+            int skippedTypeMismatchCount,
+            int committedTransactions
     ) {
         if (hasReachedRestoreBoundary(loopState.getRestoredPositions(), restoreEndOffsets)) {
             markFinalizing(context);
@@ -408,7 +453,7 @@ public class RestoreReplicationLoop {
                     context.getJobId()
             );
             loopState.finish();
-            return PollBatchOutcome.noCommit(loopState.getEmptyPolls());
+            return PollOutcome.noCommit(loopState.getEmptyPolls());
         }
 
         if (ignoredRecordCount > 0) {
@@ -418,7 +463,17 @@ public class RestoreReplicationLoop {
                     context.getJobId()
             );
         }
-        return PollBatchOutcome.noCommit(loopState.getEmptyPolls());
+        if (skippedTypeMismatchCount > 0) {
+            log.info(
+                    "Skipped {} records due to payload type mismatch for jobId={}",
+                    skippedTypeMismatchCount,
+                    context.getJobId()
+            );
+        }
+        if (committedTransactions > 0) {
+            return PollOutcome.committed(loopState.getEmptyPolls(), committedTransactions, 0L);
+        }
+        return PollOutcome.noCommit(loopState.getEmptyPolls());
     }
 
     private RestoreRecordValidationContext buildValidationContext(
@@ -623,11 +678,11 @@ public class RestoreReplicationLoop {
     ) {
         try {
             producer.abortTransaction();
-            log.info("Aborted Kafka transaction after restore batch failure: {}", originalException.getMessage());
+            log.info("Aborted Kafka transaction after restore record failure: {}", originalException.getMessage());
         } catch (RuntimeException abortException) {
             originalException.addSuppressed(abortException);
             log.warn(
-                    "Kafka transaction abort also failed after restore batch failure",
+                    "Kafka transaction abort also failed after restore record failure",
                     abortException
             );
         }
@@ -683,22 +738,31 @@ public class RestoreReplicationLoop {
         }
     }
 
-    private record PollBatchOutcome(
+    private record PollOutcome(
             int emptyPolls,
             int committedTransactions,
             long restoredRecords
     ) {
 
-        private static PollBatchOutcome empty(int emptyPolls) {
-            return new PollBatchOutcome(emptyPolls, 0, 0L);
+        private static PollOutcome empty(int emptyPolls) {
+            return new PollOutcome(emptyPolls, 0, 0L);
         }
 
-        private static PollBatchOutcome noCommit(int emptyPolls) {
-            return new PollBatchOutcome(emptyPolls, 0, 0L);
+        private static PollOutcome noCommit(int emptyPolls) {
+            return new PollOutcome(emptyPolls, 0, 0L);
         }
 
-        private static PollBatchOutcome committed(int emptyPolls, long restoredRecords) {
-            return new PollBatchOutcome(emptyPolls, 1, restoredRecords);
+        private static PollOutcome committed(
+                int emptyPolls,
+                int committedTransactions,
+                long restoredRecords
+        ) {
+            return new PollOutcome(emptyPolls, committedTransactions, restoredRecords);
         }
+    }
+
+    private enum RecordTransactionOutcome {
+        RESTORED,
+        SKIPPED_TYPE_MISMATCH
     }
 }

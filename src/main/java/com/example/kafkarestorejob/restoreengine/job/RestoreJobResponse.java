@@ -17,7 +17,7 @@ public record RestoreJobResponse(
         String targetTopic,
         String messageType,
         String errorMessage,
-        Integer batchesCommitted,
+        Integer transactionsCommitted,
         Long recordsRestored
 ) {
     public static RestoreJobResponse fromInMemoryJob(InMemoryRestoreJob job) {
@@ -37,7 +37,7 @@ public record RestoreJobResponse(
                 result == null ? null : result.targetTopic(),
                 result == null ? null : result.messageType(),
                 job.getErrorMessage(),
-                result == null ? null : result.batchesCommitted(),
+                result == null ? null : result.transactionsCommitted(),
                 result == null ? null : result.recordsRestored()
         );
     }

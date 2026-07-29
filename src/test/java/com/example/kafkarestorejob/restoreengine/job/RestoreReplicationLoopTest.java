@@ -21,9 +21,10 @@ import com.example.kafkarestorejob.restoreengine.config.EngineKafkaProperties;
 import com.example.kafkarestorejob.restoreengine.config.KafkaClientConfiguration;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreEngineException;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreExecutionResult;
-import com.example.kafkarestorejob.restoreengine.validation.RestorePayloadHandler;
+import com.example.kafkarestorejob.restoreengine.validation.MessageHandler;
 import com.example.kafkarestorejob.restoreengine.kafka.RestoreTransformer;
-import com.example.kafkarestorejob.restoreengine.validation.RestorePayloadHandlerRegistry;
+import com.example.kafkarestorejob.restoreengine.validation.MessageHandlerRegistry;
+import com.example.kafkarestorejob.restoreengine.validation.MessageTypeMismatchException;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -64,10 +65,10 @@ class RestoreReplicationLoopTest {
     private KafkaProducer<String, byte[]> producer;
 
     @Mock
-    private RestorePayloadHandlerRegistry payloadHandlerRegistry;
+    private MessageHandlerRegistry messageHandlerRegistry;
 
     @Mock
-    private RestorePayloadHandler payloadHandler;
+    private MessageHandler messageHandler;
 
     @Mock
     private RestoreTransformer transformer;
@@ -81,7 +82,7 @@ class RestoreReplicationLoopTest {
     void setUp() {
         restoreReplicationLoop = new RestoreReplicationLoop(
                 kafkaClientConfiguration,
-                payloadHandlerRegistry,
+                messageHandlerRegistry,
                 transformer
         );
 
@@ -94,7 +95,6 @@ class RestoreReplicationLoopTest {
         pipelineProperties.setTargetTopic(TARGET_TOPIC);
         pipelineProperties.setGroupId("restore-group");
         pipelineProperties.setTransactionalId("restore-tx");
-        pipelineProperties.setBatchSize(100);
 
         groupMetadata = new ConsumerGroupMetadata("restore-group");
 
@@ -103,7 +103,7 @@ class RestoreReplicationLoopTest {
         lenient().when(kafkaClientConfiguration.createProducer(nullable(String.class))).thenReturn(producer);
         lenient().when(consumer.assignment()).thenReturn(java.util.Set.of(TOPIC_PARTITION));
         lenient().when(consumer.groupMetadata()).thenReturn(groupMetadata);
-        lenient().when(payloadHandlerRegistry.requireHandler(RESTORE_TYPE)).thenReturn(payloadHandler);
+        lenient().when(messageHandlerRegistry.requireHandler(RESTORE_TYPE)).thenReturn(messageHandler);
         lenient().when(transformer.transform(eq(RESTORE_TYPE), eq(TARGET_TOPIC), any())).thenAnswer(invocation -> {
             ConsumerRecord<String, byte[]> sourceRecord = invocation.getArgument(2);
             return new ProducerRecord<>(
@@ -129,12 +129,14 @@ class RestoreReplicationLoopTest {
 
         restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context, false);
 
-        verify(payloadHandlerRegistry).requireHandler(RESTORE_TYPE);
-        verify(payloadHandler, times(2)).validate(any(), any());
+        verify(messageHandlerRegistry, times(1)).requireHandler(RESTORE_TYPE);
+        verify(messageHandler, times(2)).validate(any(), any());
         verify(producer, times(2)).beginTransaction();
         verify(producer, times(2)).send(any(ProducerRecord.class));
         verify(producer, times(2)).sendOffsetsToTransaction(anyMap(), eq(groupMetadata));
         verify(producer, times(2)).commitTransaction();
+        verify(consumer, never()).commitSync();
+        verify(consumer, never()).commitSync(anyMap());
     }
 
     @Test
@@ -149,16 +151,16 @@ class RestoreReplicationLoopTest {
 
         restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context, false);
 
-        InOrder inOrder = inOrder(producer, payloadHandlerRegistry, payloadHandler, transformer);
-        inOrder.verify(payloadHandlerRegistry).requireHandler(RESTORE_TYPE);
+        InOrder inOrder = inOrder(producer, messageHandlerRegistry, messageHandler, transformer);
+        inOrder.verify(messageHandlerRegistry).requireHandler(RESTORE_TYPE);
         inOrder.verify(producer).beginTransaction();
-        inOrder.verify(payloadHandler).validate(any(), any());
+        inOrder.verify(messageHandler).validate(any(), any());
         inOrder.verify(transformer).transform(eq(RESTORE_TYPE), eq(TARGET_TOPIC), any());
         inOrder.verify(producer).send(any(ProducerRecord.class));
         inOrder.verify(producer).sendOffsetsToTransaction(anyMap(), eq(groupMetadata));
         inOrder.verify(producer).commitTransaction();
         inOrder.verify(producer).beginTransaction();
-        inOrder.verify(payloadHandler).validate(any(), any());
+        inOrder.verify(messageHandler).validate(any(), any());
         inOrder.verify(transformer).transform(eq(RESTORE_TYPE), eq(TARGET_TOPIC), any());
         inOrder.verify(producer).send(any(ProducerRecord.class));
         inOrder.verify(producer).sendOffsetsToTransaction(anyMap(), eq(groupMetadata));
@@ -204,9 +206,42 @@ class RestoreReplicationLoopTest {
     }
 
     @Test
-    void abortsTransactionWhenValidationFailsBeforeSend() {
+    void skipsTypeMismatchAndContinuesWithLaterRecords() {
         RestoreJobExecutionContext context = runningContext();
-        doThrow(new RuntimeException("validation failed")).when(payloadHandler)
+        doThrow(new MessageTypeMismatchException("wrong message type"))
+                .doNothing()
+                .when(messageHandler)
+                .validate(any(), any());
+        when(consumer.poll(any(Duration.class))).thenReturn(
+                ConsumerRecords.empty(),
+                records(record(0L), record(1L))
+        );
+        when(consumer.position(TOPIC_PARTITION)).thenReturn(0L);
+        when(consumer.endOffsets(java.util.Set.of(TOPIC_PARTITION))).thenReturn(Map.of(TOPIC_PARTITION, 2L));
+
+        RestoreExecutionResult result =
+                restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context, false);
+
+        InOrder inOrder = inOrder(producer, messageHandlerRegistry, messageHandler);
+        inOrder.verify(messageHandlerRegistry).requireHandler(RESTORE_TYPE);
+        inOrder.verify(producer).beginTransaction();
+        inOrder.verify(messageHandler).validate(any(), any());
+        inOrder.verify(producer).sendOffsetsToTransaction(anyMap(), eq(groupMetadata));
+        inOrder.verify(producer).commitTransaction();
+        inOrder.verify(producer).beginTransaction();
+        inOrder.verify(messageHandler).validate(any(), any());
+        verify(producer, times(1)).send(any(ProducerRecord.class));
+        verify(producer, times(2)).sendOffsetsToTransaction(anyMap(), eq(groupMetadata));
+        verify(producer, times(2)).commitTransaction();
+        verify(producer, never()).abortTransaction();
+        assertEquals(1L, result.recordsRestored());
+        assertEquals(2, result.transactionsCommitted());
+    }
+
+    @Test
+    void abortsTransactionWhenBinaryValidationFailsBeforeSend() {
+        RestoreJobExecutionContext context = runningContext();
+        doThrow(new RuntimeException("binary validation failed")).when(messageHandler)
                 .validate(any(), any());
         when(consumer.poll(any(Duration.class))).thenReturn(
                 ConsumerRecords.empty(),
@@ -218,10 +253,10 @@ class RestoreReplicationLoopTest {
         assertThrows(RestoreEngineException.class,
                 () -> restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context, false));
 
-        InOrder inOrder = inOrder(producer, payloadHandlerRegistry, payloadHandler);
-        inOrder.verify(payloadHandlerRegistry).requireHandler(RESTORE_TYPE);
+        InOrder inOrder = inOrder(producer, messageHandlerRegistry, messageHandler);
+        inOrder.verify(messageHandlerRegistry).requireHandler(RESTORE_TYPE);
         inOrder.verify(producer).beginTransaction();
-        inOrder.verify(payloadHandler).validate(any(), any());
+        inOrder.verify(messageHandler).validate(any(), any());
         inOrder.verify(producer).abortTransaction();
         verify(producer, never()).send(any(ProducerRecord.class));
         verify(producer, never()).sendOffsetsToTransaction(anyMap(), any());
@@ -376,7 +411,7 @@ class RestoreReplicationLoopTest {
         RestoreExecutionResult result = restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context, false);
 
         verify(producer, never()).beginTransaction();
-        assertEquals(0, result.batchesCommitted());
+        assertEquals(0, result.transactionsCommitted());
         assertEquals(0L, result.recordsRestored());
         assertEquals(RestoreJobStatus.FINALIZING, context.getStatus());
     }
@@ -396,7 +431,7 @@ class RestoreReplicationLoopTest {
 
         verify(producer, times(3)).beginTransaction();
         verify(producer, times(3)).commitTransaction();
-        assertEquals(3, result.batchesCommitted());
+        assertEquals(3, result.transactionsCommitted());
         assertEquals(3L, result.recordsRestored());
     }
 
@@ -415,6 +450,7 @@ class RestoreReplicationLoopTest {
         verify(consumer).committed(java.util.Set.of(TOPIC_PARTITION));
         verify(consumer).seek(TOPIC_PARTITION, 7L);
         verify(consumer, never()).seekToBeginning(java.util.Set.of(TOPIC_PARTITION));
+        verify(consumer, never()).commitSync();
         assertEquals(0L, result.recordsRestored());
     }
 

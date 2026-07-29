@@ -7,7 +7,7 @@ public record RestoreExecutionResult(
         String groupId,
         String transactionalId,
         String messageType,
-        int batchesCommitted,
+        int transactionsCommitted,
         long recordsRestored,
         int emptyPollsObserved
 ) {

@@ -216,9 +216,6 @@ public class EngineKafkaProperties {
         @NotBlank
         private String transactionalId;
 
-        @Min(1)
-        private int batchSize;
-
         public String getSourceTopic() {
             return sourceTopic;
         }
@@ -249,14 +246,6 @@ public class EngineKafkaProperties {
 
         public void setTransactionalId(String transactionalId) {
             this.transactionalId = transactionalId;
-        }
-
-        public int getBatchSize() {
-            return batchSize;
-        }
-
-        public void setBatchSize(int batchSize) {
-            this.batchSize = batchSize;
         }
     }
 }

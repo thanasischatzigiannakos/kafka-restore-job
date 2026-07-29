@@ -9,15 +9,14 @@ import java.util.List;
 import org.springframework.stereotype.Component;
 
 @Component
-public class ApplicationRestorePayloadHandler
-        extends AbstractParsedPayloadHandler<ApplicationRestoreMessage> {
+public class ApplicationMessageHandler extends BinaryMessageHandler<ApplicationRestoreMessage> {
 
-    public ApplicationRestorePayloadHandler(S3FileExistenceVerifier s3FileExistenceVerifier) {
+    public ApplicationMessageHandler(S3FileExistenceVerifier s3FileExistenceVerifier) {
         super(s3FileExistenceVerifier);
     }
 
     @Override
-    public String restoreType() {
+    public String getType() {
         return "application";
     }
 
@@ -31,20 +30,14 @@ public class ApplicationRestorePayloadHandler
     }
 
     @Override
-    protected void validatePayloadType(
-            RestoreRecordValidationContext context,
-            ApplicationRestoreMessage payload
-    ) {
-        if (payload.getEntityType() == null || !"application".equalsIgnoreCase(payload.getEntityType())) {
-            throw new RestorePayloadValidationException(
-                    "Unexpected payload type for restoreType=" + context.restoreType()
-                            + " sourceTopic=" + context.sourceTopic()
-                            + " partition=" + context.partition()
-                            + " offset=" + context.offset()
-                            + " expectedMessageType=application"
-                            + " actualEntityType=" + payload.getEntityType()
-            );
-        }
+    protected boolean validateStructure(ApplicationRestoreMessage payload) {
+        return payload.getEntityType() != null
+                && "application".equalsIgnoreCase(payload.getEntityType());
+    }
+
+    @Override
+    protected String payloadDescription(ApplicationRestoreMessage payload) {
+        return "entityType=" + payload.getEntityType();
     }
 
     @Override

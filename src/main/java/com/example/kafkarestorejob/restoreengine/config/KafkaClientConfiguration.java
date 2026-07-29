@@ -39,7 +39,6 @@ public class KafkaClientConfiguration {
         config.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         config.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class);
         config.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
-        config.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, pipeline.getBatchSize());
         config.put(ConsumerConfig.ISOLATION_LEVEL_CONFIG, "read_committed");
         config.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         config.put(ConsumerConfig.REQUEST_TIMEOUT_MS_CONFIG, Math.toIntExact(engineKafkaProperties.getRequestTimeout().toMillis()));
