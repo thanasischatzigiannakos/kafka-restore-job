@@ -34,7 +34,7 @@ public class KafkaClientConfiguration {
     public KafkaConsumer<String, byte[]> createConsumer(String restoreType) {
         EngineKafkaProperties.PipelineProperties pipeline = requirePipeline(restoreType);
         Map<String, Object> config = new HashMap<>();
-        config.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, engineKafkaProperties.getBootstrapServers());
+        config.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, engineKafkaProperties.requireSourceBootstrapServers());
         config.put(ConsumerConfig.GROUP_ID_CONFIG, pipeline.getGroupId());
         config.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         config.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class);
@@ -63,7 +63,7 @@ public class KafkaClientConfiguration {
     public KafkaProducer<String, byte[]> createProducer(String restoreType) {
         EngineKafkaProperties.PipelineProperties pipeline = requirePipeline(restoreType);
         Map<String, Object> config = new HashMap<>();
-        config.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, engineKafkaProperties.getBootstrapServers());
+        config.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, engineKafkaProperties.requireTargetBootstrapServers());
         config.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
         config.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class);
         config.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);

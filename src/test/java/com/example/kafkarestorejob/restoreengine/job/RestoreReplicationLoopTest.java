@@ -31,7 +31,6 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
-import org.apache.kafka.clients.consumer.ConsumerGroupMetadata;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
@@ -76,7 +75,6 @@ class RestoreReplicationLoopTest {
     private RestoreReplicationLoop restoreReplicationLoop;
     private EngineKafkaProperties engineKafkaProperties;
     private EngineKafkaProperties.PipelineProperties pipelineProperties;
-    private ConsumerGroupMetadata groupMetadata;
 
     @BeforeEach
     void setUp() {
@@ -96,13 +94,10 @@ class RestoreReplicationLoopTest {
         pipelineProperties.setGroupId("restore-group");
         pipelineProperties.setTransactionalId("restore-tx");
 
-        groupMetadata = new ConsumerGroupMetadata("restore-group");
-
         lenient().when(kafkaClientConfiguration.getEngineKafkaProperties()).thenReturn(engineKafkaProperties);
         lenient().when(kafkaClientConfiguration.createConsumer(nullable(String.class))).thenReturn(consumer);
         lenient().when(kafkaClientConfiguration.createProducer(nullable(String.class))).thenReturn(producer);
         lenient().when(consumer.assignment()).thenReturn(java.util.Set.of(TOPIC_PARTITION));
-        lenient().when(consumer.groupMetadata()).thenReturn(groupMetadata);
         lenient().when(messageHandlerRegistry.requireHandler(RESTORE_TYPE)).thenReturn(messageHandler);
         lenient().when(transformer.transform(eq(RESTORE_TYPE), eq(TARGET_TOPIC), any())).thenAnswer(invocation -> {
             ConsumerRecord<String, byte[]> sourceRecord = invocation.getArgument(2);
@@ -133,10 +128,9 @@ class RestoreReplicationLoopTest {
         verify(messageHandler, times(2)).validate(any(), any());
         verify(producer, times(2)).beginTransaction();
         verify(producer, times(2)).send(any(ProducerRecord.class));
-        verify(producer, times(2)).sendOffsetsToTransaction(anyMap(), eq(groupMetadata));
         verify(producer, times(2)).commitTransaction();
+        verify(consumer, times(2)).commitSync(anyMap());
         verify(consumer, never()).commitSync();
-        verify(consumer, never()).commitSync(anyMap());
     }
 
     @Test
@@ -151,20 +145,20 @@ class RestoreReplicationLoopTest {
 
         restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context, false);
 
-        InOrder inOrder = inOrder(producer, messageHandlerRegistry, messageHandler, transformer);
+        InOrder inOrder = inOrder(producer, consumer, messageHandlerRegistry, messageHandler, transformer);
         inOrder.verify(messageHandlerRegistry).requireHandler(RESTORE_TYPE);
         inOrder.verify(producer).beginTransaction();
         inOrder.verify(messageHandler).validate(any(), any());
         inOrder.verify(transformer).transform(eq(RESTORE_TYPE), eq(TARGET_TOPIC), any());
         inOrder.verify(producer).send(any(ProducerRecord.class));
-        inOrder.verify(producer).sendOffsetsToTransaction(anyMap(), eq(groupMetadata));
         inOrder.verify(producer).commitTransaction();
+        inOrder.verify(consumer).commitSync(anyMap());
         inOrder.verify(producer).beginTransaction();
         inOrder.verify(messageHandler).validate(any(), any());
         inOrder.verify(transformer).transform(eq(RESTORE_TYPE), eq(TARGET_TOPIC), any());
         inOrder.verify(producer).send(any(ProducerRecord.class));
-        inOrder.verify(producer).sendOffsetsToTransaction(anyMap(), eq(groupMetadata));
         inOrder.verify(producer).commitTransaction();
+        inOrder.verify(consumer).commitSync(anyMap());
     }
 
     @Test
@@ -202,7 +196,7 @@ class RestoreReplicationLoopTest {
                 () -> restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context, false));
 
         verify(producer).abortTransaction();
-        verify(producer, never()).sendOffsetsToTransaction(anyMap(), any());
+        verify(consumer, never()).commitSync(anyMap());
     }
 
     @Test
@@ -222,20 +216,18 @@ class RestoreReplicationLoopTest {
         RestoreExecutionResult result =
                 restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context, false);
 
-        InOrder inOrder = inOrder(producer, messageHandlerRegistry, messageHandler);
+        InOrder inOrder = inOrder(producer, consumer, messageHandlerRegistry, messageHandler);
         inOrder.verify(messageHandlerRegistry).requireHandler(RESTORE_TYPE);
-        inOrder.verify(producer).beginTransaction();
         inOrder.verify(messageHandler).validate(any(), any());
-        inOrder.verify(producer).sendOffsetsToTransaction(anyMap(), eq(groupMetadata));
-        inOrder.verify(producer).commitTransaction();
+        inOrder.verify(consumer).commitSync(anyMap());
         inOrder.verify(producer).beginTransaction();
         inOrder.verify(messageHandler).validate(any(), any());
         verify(producer, times(1)).send(any(ProducerRecord.class));
-        verify(producer, times(2)).sendOffsetsToTransaction(anyMap(), eq(groupMetadata));
-        verify(producer, times(2)).commitTransaction();
+        verify(producer, times(1)).commitTransaction();
+        verify(consumer, times(2)).commitSync(anyMap());
         verify(producer, never()).abortTransaction();
         assertEquals(1L, result.recordsRestored());
-        assertEquals(2, result.transactionsCommitted());
+        assertEquals(1, result.transactionsCommitted());
     }
 
     @Test
@@ -255,19 +247,19 @@ class RestoreReplicationLoopTest {
 
         InOrder inOrder = inOrder(producer, messageHandlerRegistry, messageHandler);
         inOrder.verify(messageHandlerRegistry).requireHandler(RESTORE_TYPE);
-        inOrder.verify(producer).beginTransaction();
         inOrder.verify(messageHandler).validate(any(), any());
-        inOrder.verify(producer).abortTransaction();
+        verify(producer, never()).beginTransaction();
+        verify(producer, never()).abortTransaction();
         verify(producer, never()).send(any(ProducerRecord.class));
-        verify(producer, never()).sendOffsetsToTransaction(anyMap(), any());
         verify(producer, never()).commitTransaction();
+        verify(consumer, never()).commitSync(anyMap());
     }
 
     @Test
-    void abortsTransactionWhenOffsetSubmissionFails() {
+    void failsWhenSourceOffsetCommitFailsAfterTargetCommit() {
         RestoreJobExecutionContext context = runningContext();
-        doThrow(new RuntimeException("offset failure")).when(producer)
-                .sendOffsetsToTransaction(anyMap(), eq(groupMetadata));
+        doThrow(new RuntimeException("offset failure")).when(consumer)
+                .commitSync(anyMap());
         when(consumer.poll(any(Duration.class))).thenReturn(
                 ConsumerRecords.empty(),
                 records(record(0L), record(1L))
@@ -278,7 +270,7 @@ class RestoreReplicationLoopTest {
         assertThrows(RestoreEngineException.class,
                 () -> restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context, false));
 
-        verify(producer).abortTransaction();
+        verify(producer).commitTransaction();
     }
 
     @Test
@@ -296,6 +288,7 @@ class RestoreReplicationLoopTest {
                 () -> restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context, false));
 
         verify(producer).abortTransaction();
+        verify(consumer, never()).commitSync(anyMap());
     }
 
     @Test
@@ -319,7 +312,7 @@ class RestoreReplicationLoopTest {
         assertThrows(RestoreEngineException.class,
                 () -> restoreReplicationLoop.restore(RESTORE_TYPE, pipelineProperties, null, context, false));
 
-        verify(producer, times(1)).sendOffsetsToTransaction(anyMap(), eq(groupMetadata));
+        verify(consumer, times(1)).commitSync(anyMap());
         verify(producer, times(1)).commitTransaction();
         verify(producer, times(1)).abortTransaction();
     }
@@ -339,7 +332,7 @@ class RestoreReplicationLoopTest {
         verify(producer, times(2)).send(any(ProducerRecord.class));
         ArgumentCaptor<Map<TopicPartition, OffsetAndMetadata>> offsetsCaptor =
                 ArgumentCaptor.forClass(Map.class);
-        verify(producer, times(2)).sendOffsetsToTransaction(offsetsCaptor.capture(), eq(groupMetadata));
+        verify(consumer, times(2)).commitSync(offsetsCaptor.capture());
         assertEquals(2L, offsetsCaptor.getValue().get(TOPIC_PARTITION).offset());
         assertEquals(2L, result.recordsRestored());
         assertEquals(RestoreJobStatus.FINALIZING, context.getStatus());
@@ -359,8 +352,8 @@ class RestoreReplicationLoopTest {
 
         verify(producer).beginTransaction();
         verify(producer).send(any(ProducerRecord.class));
-        verify(producer).sendOffsetsToTransaction(anyMap(), eq(groupMetadata));
         verify(producer).commitTransaction();
+        verify(consumer).commitSync(anyMap());
         assertEquals(RestoreJobStatus.FINALIZING, context.getStatus());
     }
 

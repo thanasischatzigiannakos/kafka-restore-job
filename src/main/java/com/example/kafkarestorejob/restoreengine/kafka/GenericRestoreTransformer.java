@@ -22,6 +22,15 @@ public class GenericRestoreTransformer implements RestoreTransformer {
         );
         sourceRecord.headers().forEach(header -> targetRecord.headers().add(header));
         targetRecord.headers().add("restore-message-type", restoreType.getBytes(StandardCharsets.UTF_8));
+        targetRecord.headers().add("restore-source-topic", sourceRecord.topic().getBytes(StandardCharsets.UTF_8));
+        targetRecord.headers().add(
+                "restore-source-partition",
+                Integer.toString(sourceRecord.partition()).getBytes(StandardCharsets.UTF_8)
+        );
+        targetRecord.headers().add(
+                "restore-source-offset",
+                Long.toString(sourceRecord.offset()).getBytes(StandardCharsets.UTF_8)
+        );
         return targetRecord;
     }
 }

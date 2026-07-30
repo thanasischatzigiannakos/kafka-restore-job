@@ -19,7 +19,6 @@ import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
-import org.apache.kafka.clients.consumer.ConsumerGroupMetadata;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.consumer.OffsetAndTimestamp;
@@ -111,7 +110,6 @@ public class RestoreReplicationLoop {
                 PollOutcome pollOutcome = pollAndRestoreRecords(
                         consumer,
                         producer,
-                        consumer.groupMetadata(),
                         context,
                         restoreType,
                         pipeline,
@@ -150,7 +148,6 @@ public class RestoreReplicationLoop {
     private PollOutcome pollAndRestoreRecords(
             KafkaConsumer<String, byte[]> consumer,
             KafkaProducer<String, byte[]> producer,
-            ConsumerGroupMetadata groupMetadata,
             RestoreJobExecutionContext context,
             String restoreType,
             EngineKafkaProperties.PipelineProperties pipeline,
@@ -169,8 +166,8 @@ public class RestoreReplicationLoop {
 
         loopState.resetEmptyPolls();
         return restorePolledRecords(
+                consumer,
                 producer,
-                groupMetadata,
                 context,
                 restoreType,
                 pipeline,
@@ -198,8 +195,8 @@ public class RestoreReplicationLoop {
     }
 
     private PollOutcome restorePolledRecords(
+            KafkaConsumer<String, byte[]> consumer,
             KafkaProducer<String, byte[]> producer,
-            ConsumerGroupMetadata groupMetadata,
             RestoreJobExecutionContext context,
             String restoreType,
             EngineKafkaProperties.PipelineProperties pipeline,
@@ -230,8 +227,8 @@ public class RestoreReplicationLoop {
             boolean finalRecord = hasReachedRestoreBoundary(nextRestoredPositions, restoreEndOffsets);
 
             RecordTransactionOutcome transactionOutcome = restoreRecordTransaction(
+                    consumer,
                     producer,
-                    groupMetadata,
                     sourceRecord,
                     offsets,
                     context,
@@ -246,10 +243,10 @@ public class RestoreReplicationLoop {
             loopState.recordCommittedTransaction(finalRecord);
             if (transactionOutcome == RecordTransactionOutcome.RESTORED) {
                 restoredRecords++;
+                committedTransactions++;
             } else {
                 skippedTypeMismatches++;
             }
-            committedTransactions++;
             logCommittedRecord(
                     context,
                     loopState.getCommittedTransactions(),
@@ -368,8 +365,8 @@ public class RestoreReplicationLoop {
     }
 
     private RecordTransactionOutcome restoreRecordTransaction(
+            KafkaConsumer<String, byte[]> consumer,
             KafkaProducer<String, byte[]> producer,
-            ConsumerGroupMetadata groupMetadata,
             ConsumerRecord<String, byte[]> sourceRecord,
             Map<TopicPartition, OffsetAndMetadata> offsets,
             RestoreJobExecutionContext context,
@@ -379,18 +376,21 @@ public class RestoreReplicationLoop {
             RestoreTransformer transformer,
             MessageHandler messageHandler
     ) {
-        producer.beginTransaction();
+        boolean transactionStarted = false;
         try {
             context.throwIfCancellationRequested();
             messageHandler.validate(
                     sourceRecord,
                     buildValidationContext(context, restoreType, sourceRecord)
             );
+            producer.beginTransaction();
+            transactionStarted = true;
             ProducerRecord<String, byte[]> targetRecord =
                     transformer.transform(restoreType, pipeline.getTargetTopic(), sourceRecord);
 
             producer.send(targetRecord).get();
-            commitRecordOffsetTransaction(producer, groupMetadata, offsets, context, finalRecord);
+            commitProducerTransaction(producer, context, finalRecord);
+            commitSourceOffsets(consumer, offsets, context, sourceRecord, restoreType);
             return RecordTransactionOutcome.RESTORED;
         } catch (MessageTypeMismatchException exception) {
             log.warn(
@@ -402,30 +402,29 @@ public class RestoreReplicationLoop {
                     sourceRecord.offset(),
                     exception.getMessage()
             );
-            commitRecordOffsetTransaction(producer, groupMetadata, offsets, context, finalRecord);
+            if (finalRecord) {
+                markFinalizing(context);
+            }
+            commitSourceOffsets(consumer, offsets, context, sourceRecord, restoreType);
             return RecordTransactionOutcome.SKIPPED_TYPE_MISMATCH;
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
-            abortTransactionSafely(producer, exception);
+            abortTransactionIfStarted(producer, exception, transactionStarted);
             throw new RestoreEngineException("Restore record interrupted", exception);
         } catch (RestoreJobCancellationException exception) {
-            abortTransactionSafely(producer, exception);
+            abortTransactionIfStarted(producer, exception, transactionStarted);
             throw exception;
         } catch (RuntimeException | ExecutionException exception) {
-            abortTransactionSafely(producer, exception);
+            abortTransactionIfStarted(producer, exception, transactionStarted);
             throw restoreRecordFailure(exception);
         }
     }
 
-    private void commitRecordOffsetTransaction(
+    private void commitProducerTransaction(
             KafkaProducer<String, byte[]> producer,
-            ConsumerGroupMetadata groupMetadata,
-            Map<TopicPartition, OffsetAndMetadata> offsets,
             RestoreJobExecutionContext context,
             boolean finalRecord
     ) {
-        producer.sendOffsetsToTransaction(offsets, groupMetadata);
-
         if (finalRecord) {
             if (!context.tryMarkFinalizing()) {
                 handleFinalizingTransitionFailure(context);
@@ -436,6 +435,32 @@ public class RestoreReplicationLoop {
         // If commitTransaction() is ambiguous due to a network failure, this execution fails
         // and a future restart must continue with a new producer instance for the same stable transactional.id.
         producer.commitTransaction();
+    }
+
+    private void commitSourceOffsets(
+            KafkaConsumer<String, byte[]> consumer,
+            Map<TopicPartition, OffsetAndMetadata> offsets,
+            RestoreJobExecutionContext context,
+            ConsumerRecord<String, byte[]> sourceRecord,
+            String restoreType
+    ) {
+        try {
+            consumer.commitSync(offsets);
+        } catch (RuntimeException exception) {
+            throw new RestoreEngineException(
+                    "Target record was committed but source offset commit failed. jobId="
+                            + context.getJobId()
+                            + " restoreType="
+                            + restoreType
+                            + " topic="
+                            + sourceRecord.topic()
+                            + " partition="
+                            + sourceRecord.partition()
+                            + " offset="
+                            + sourceRecord.offset(),
+                    exception
+            );
+        }
     }
 
     private PollOutcome handleEmptyRestorePoll(
@@ -686,6 +711,17 @@ public class RestoreReplicationLoop {
                     abortException
             );
         }
+    }
+
+    private void abortTransactionIfStarted(
+            KafkaProducer<String, byte[]> producer,
+            Exception originalException,
+            boolean transactionStarted
+    ) {
+        if (!transactionStarted) {
+            return;
+        }
+        abortTransactionSafely(producer, originalException);
     }
 
     private static final class RestoreLoopState {

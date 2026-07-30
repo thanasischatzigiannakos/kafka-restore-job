@@ -18,6 +18,10 @@ public class EngineKafkaProperties {
     @NotBlank
     private String bootstrapServers;
 
+    private String sourceBootstrapServers;
+
+    private String targetBootstrapServers;
+
     @NotNull
     private Duration pollTimeout;
 
@@ -64,6 +68,30 @@ public class EngineKafkaProperties {
 
     public void setBootstrapServers(String bootstrapServers) {
         this.bootstrapServers = bootstrapServers;
+    }
+
+    public String getSourceBootstrapServers() {
+        return sourceBootstrapServers;
+    }
+
+    public void setSourceBootstrapServers(String sourceBootstrapServers) {
+        this.sourceBootstrapServers = sourceBootstrapServers;
+    }
+
+    public String getTargetBootstrapServers() {
+        return targetBootstrapServers;
+    }
+
+    public void setTargetBootstrapServers(String targetBootstrapServers) {
+        this.targetBootstrapServers = targetBootstrapServers;
+    }
+
+    public String requireSourceBootstrapServers() {
+        return hasText(sourceBootstrapServers) ? sourceBootstrapServers : bootstrapServers;
+    }
+
+    public String requireTargetBootstrapServers() {
+        return hasText(targetBootstrapServers) ? targetBootstrapServers : bootstrapServers;
     }
 
     public Duration getPollTimeout() {
@@ -200,6 +228,10 @@ public class EngineKafkaProperties {
             throw new IllegalArgumentException("No Kafka pipeline configured for restore type: " + restoreType);
         }
         return pipelineProperties;
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     public static class PipelineProperties {
