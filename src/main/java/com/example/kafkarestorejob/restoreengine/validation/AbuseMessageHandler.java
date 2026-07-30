@@ -61,6 +61,6 @@ public class AbuseMessageHandler extends BinaryMessageHandler<AbuseRestoreMessag
         if (uploadedFile == null || uploadedFile.getObjectKey() == null || uploadedFile.getObjectKey().isBlank()) {
             return;
         }
-        references.add(new FileReference(fieldPath, uploadedFile.getObjectKey()));
+        references.add(new FileReference(fieldPath, uploadedFile.getObjectKey(), uploadedFile.getChecksum()));
     }
 }

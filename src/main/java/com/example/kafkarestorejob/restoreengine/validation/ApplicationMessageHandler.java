@@ -74,6 +74,6 @@ public class ApplicationMessageHandler extends BinaryMessageHandler<ApplicationR
         if (document == null || document.getObjectKey() == null || document.getObjectKey().isBlank()) {
             return;
         }
-        references.add(new FileReference(fieldPath, document.getObjectKey()));
+        references.add(new FileReference(fieldPath, document.getObjectKey(), document.getChecksum()));
     }
 }

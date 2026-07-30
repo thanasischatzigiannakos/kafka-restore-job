@@ -27,6 +27,8 @@ extract populated file references, if that restore type has any
     ↓
 for each extracted object key, run S3 headObject against the single configured bucket
     ↓
+when a checksum is present, compare it against S3 SHA-256 metadata or a streamed SHA-256 fallback
+    ↓
 if validation succeeds, forward the original bytes unchanged
 ```
 
@@ -61,7 +63,7 @@ If a record parses successfully but does not match the expected logical type for
   Copies the source record bytes unchanged to the target topic and adds a `restore-message-type` header with the restore type.
 
 - `S3FileExistenceVerifier`
-  Uses `headObject` against the configured bucket to confirm that each extracted object key exists.
+  Uses `headObject` against the configured bucket to confirm that each extracted object key exists and validates SHA-256 checksums when present.
 
 ## Kafka transaction behavior
 
@@ -115,7 +117,12 @@ engine.s3.secret-key=
 engine.s3.path-style-access=false
 ```
 
-Only object existence is checked. Checksum validation is not part of the current implementation.
+Checksum handling:
+
+- missing or blank checksum: existence-only validation
+- checksum present: compare as SHA-256
+- prefer S3 checksum metadata when available
+- otherwise stream the object and calculate SHA-256 locally
 
 ## Restore flow summary
 
