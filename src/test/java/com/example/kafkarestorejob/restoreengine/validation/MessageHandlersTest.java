@@ -1,6 +1,9 @@
 package com.example.kafkarestorejob.restoreengine.validation;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
@@ -17,6 +20,23 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.junit.jupiter.api.Test;
 
 class MessageHandlersTest {
+
+    @Test
+    void handlersExposeExpectedTypesAndBinaryCapabilities() {
+        ApplicationMessageHandler applicationHandler =
+                new ApplicationMessageHandler(mock(S3FileExistenceVerifier.class));
+        AbuseMessageHandler abuseHandler =
+                new AbuseMessageHandler(mock(S3FileExistenceVerifier.class));
+        NotificationMessageHandler notificationHandler =
+                new NotificationMessageHandler();
+
+        assertEquals("application", applicationHandler.getType());
+        assertEquals("abuse", abuseHandler.getType());
+        assertEquals("notification", notificationHandler.getType());
+        assertTrue(applicationHandler.hasBinary());
+        assertTrue(abuseHandler.hasBinary());
+        assertFalse(notificationHandler.hasBinary());
+    }
 
     @Test
     void notificationHandlerAcceptsMatchingPayloadWithoutS3Validation() {
@@ -141,6 +161,32 @@ class MessageHandlersTest {
     }
 
     @Test
+    void applicationHandlerSkipsS3WhenNoKnownBinaryReferencesExist() {
+        S3FileExistenceVerifier verifier = mock(S3FileExistenceVerifier.class);
+        ApplicationMessageHandler handler = new ApplicationMessageHandler(verifier);
+
+        handler.validate(
+                new ConsumerRecord<>(
+                        "topic",
+                        0,
+                        1L,
+                        "key",
+                        """
+                        {
+                          "entityType":"application",
+                          "writtenDocument":{"objectKey":" "},
+                          "translatedFiles":[{}],
+                          "applicant":{"uploadedFiles":[{"objectKey":""}]}
+                        }
+                        """.getBytes(StandardCharsets.UTF_8)
+                ),
+                context("application")
+        );
+
+        verifyNoInteractions(verifier);
+    }
+
+    @Test
     void abuseHandlerSkipsBlankObjectKeys() {
         S3FileExistenceVerifier verifier = mock(S3FileExistenceVerifier.class);
         AbuseMessageHandler handler = new AbuseMessageHandler(verifier);
@@ -164,6 +210,53 @@ class MessageHandlersTest {
 
         verify(verifier, times(1)).verifyExists(any(), eq("abuse"), any());
         verifyNoMoreInteractions(verifier);
+    }
+
+    @Test
+    void abuseHandlerRejectsMissingMessageIdBeforeS3Validation() {
+        S3FileExistenceVerifier verifier = mock(S3FileExistenceVerifier.class);
+        AbuseMessageHandler handler = new AbuseMessageHandler(verifier);
+
+        assertThrows(
+                MessageTypeMismatchException.class,
+                () -> handler.validate(
+                        new ConsumerRecord<>(
+                                "topic",
+                                0,
+                                1L,
+                                "key",
+                                "{\"attachments\":[{\"objectKey\":\"att-1\"}]}".getBytes(StandardCharsets.UTF_8)
+                        ),
+                        context("abuse")
+                )
+        );
+
+        verifyNoInteractions(verifier);
+    }
+
+    @Test
+    void abuseHandlerSkipsS3WhenNoBinaryReferencesExist() {
+        S3FileExistenceVerifier verifier = mock(S3FileExistenceVerifier.class);
+        AbuseMessageHandler handler = new AbuseMessageHandler(verifier);
+
+        handler.validate(
+                new ConsumerRecord<>(
+                        "topic",
+                        0,
+                        1L,
+                        "key",
+                        """
+                        {
+                          "messageId":"abuse-1",
+                          "uploadedFile":{"objectKey":" "},
+                          "attachments":[{},{"objectKey":"   "}]
+                        }
+                        """.getBytes(StandardCharsets.UTF_8)
+                ),
+                context("abuse")
+        );
+
+        verifyNoInteractions(verifier);
     }
 
     @Test
