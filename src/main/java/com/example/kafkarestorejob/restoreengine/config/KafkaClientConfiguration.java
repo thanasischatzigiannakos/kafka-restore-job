@@ -42,7 +42,10 @@ public class KafkaClientConfiguration {
         config.put(ConsumerConfig.ISOLATION_LEVEL_CONFIG, "read_committed");
         config.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         config.put(ConsumerConfig.REQUEST_TIMEOUT_MS_CONFIG, Math.toIntExact(engineKafkaProperties.getRequestTimeout().toMillis()));
-        securityConfigHelper.applySecurityProperties(config, engineKafkaProperties);
+        securityConfigHelper.applySecurityProperties(
+                config,
+                engineKafkaProperties.resolveSourceSecurityProperties()
+        );
         return new KafkaConsumer<>(config);
     }
 
@@ -56,7 +59,10 @@ public class KafkaClientConfiguration {
         config.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         config.put(ConsumerConfig.ISOLATION_LEVEL_CONFIG, "read_committed");
         config.put(ConsumerConfig.REQUEST_TIMEOUT_MS_CONFIG, Math.toIntExact(engineKafkaProperties.getRequestTimeout().toMillis()));
-        securityConfigHelper.applySecurityProperties(config, engineKafkaProperties);
+        securityConfigHelper.applySecurityProperties(
+                config,
+                engineKafkaProperties.resolveSourceSecurityProperties()
+        );
         return new KafkaConsumer<>(config);
     }
 
@@ -72,7 +78,10 @@ public class KafkaClientConfiguration {
         config.put(ProducerConfig.TRANSACTION_TIMEOUT_CONFIG, Math.toIntExact(engineKafkaProperties.getTransactionTimeout().toMillis()));
         config.put(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, Math.toIntExact(engineKafkaProperties.getRequestTimeout().toMillis()));
         config.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, Math.toIntExact(engineKafkaProperties.getDeliveryTimeout().toMillis()));
-        securityConfigHelper.applySecurityProperties(config, engineKafkaProperties);
+        securityConfigHelper.applySecurityProperties(
+                config,
+                engineKafkaProperties.resolveTargetSecurityProperties()
+        );
         KafkaProducer<String, byte[]> producer = new KafkaProducer<>(config);
         producer.initTransactions();
         return producer;

@@ -103,6 +103,11 @@ Kafka pipelines are configured by pipeline key plus topic/group settings. Broker
 ```properties
 engine.kafka.source-bootstrap-servers=source-cluster:9092
 engine.kafka.target-bootstrap-servers=target-cluster:9092
+engine.kafka.source.security-protocol=SASL_SSL
+engine.kafka.source.sasl-mechanism=SCRAM-SHA-512
+engine.kafka.source.sasl-jaas-config=...
+engine.kafka.target.security-protocol=SSL
+engine.kafka.target.truststore-location=/etc/certs/target.truststore.p12
 
 engine.kafka.pipelines.application.source-topic=application-restore-source
 engine.kafka.pipelines.application.target-topic=application-restore-target
@@ -110,7 +115,13 @@ engine.kafka.pipelines.application.group-id=application-restore-group
 engine.kafka.pipelines.application.transactional-id=application-restore-tx-producer
 ```
 
-If `engine.kafka.source-bootstrap-servers` or `engine.kafka.target-bootstrap-servers` are blank, the implementation falls back to `engine.kafka.bootstrap-servers`. Equivalent pipeline entries exist for `abuse` and `notification`.
+If `engine.kafka.source-bootstrap-servers` or `engine.kafka.target-bootstrap-servers` are blank, the implementation falls back to `engine.kafka.bootstrap-servers`. The same fallback model applies to security:
+
+- `engine.kafka.source.*` overrides shared `engine.kafka.*` security settings for the consumer
+- `engine.kafka.target.*` overrides shared `engine.kafka.*` security settings for the producer
+- if the source/target security fields are blank, the implementation falls back to the shared `engine.kafka.*` values
+
+Equivalent pipeline entries exist for `abuse` and `notification`.
 
 ## S3 configuration
 

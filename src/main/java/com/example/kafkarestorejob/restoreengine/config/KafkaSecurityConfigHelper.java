@@ -10,7 +10,10 @@ import org.springframework.util.StringUtils;
 @Component
 public class KafkaSecurityConfigHelper {
 
-    public void applySecurityProperties(Map<String, Object> config, EngineKafkaProperties properties) {
+    public void applySecurityProperties(
+            Map<String, Object> config,
+            EngineKafkaProperties.SecurityProperties properties
+    ) {
         config.put(CommonClientConfigs.SECURITY_PROTOCOL_CONFIG, properties.getSecurityProtocol());
         putIfHasText(config, SaslConfigs.SASL_MECHANISM, properties.getSaslMechanism());
         putIfHasText(config, SaslConfigs.SASL_JAAS_CONFIG, properties.getSaslJaasConfig());
