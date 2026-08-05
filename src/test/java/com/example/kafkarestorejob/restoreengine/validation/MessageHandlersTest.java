@@ -84,11 +84,11 @@ class MessageHandlersTest {
                         """
                         {
                           "entityType":"application",
-                          "writtenDocument":{"objectKey":"written","checksum":"abc"},
-                          "signedForm":{"objectKey":"signed","checksum":"def"},
-                          "signedLocallyForm":{"objectKey":"local","checksum":"ghi"},
-                          "translatedFiles":[{"objectKey":"translated-0","checksum":"jkl"}],
-                          "applicant":{"uploadedFiles":[{"objectKey":"app-0","checksum":"mno"},{"objectKey":"app-1"}]}
+                          "writtenDocument":{"objectKey":"written"},
+                          "signedForm":{"objectKey":"signed"},
+                          "signedLocallyForm":{"objectKey":"local"},
+                          "translatedFiles":[{"objectKey":"translated-0"}],
+                          "applicant":{"uploadedFiles":[{"objectKey":"app-0"},{"objectKey":"app-1"}]}
                         }
                         """.getBytes(StandardCharsets.UTF_8)
                 ),
@@ -155,7 +155,7 @@ class MessageHandlersTest {
                         {
                           "messageId":"abuse-1",
                           "uploadedFile":{"objectKey":" "},
-                          "attachments":[{"objectKey":"att-1","checksum":"sum-1"},{}]
+                          "attachments":[{"objectKey":"att-1"},{}]
                         }
                         """.getBytes(StandardCharsets.UTF_8)
                 ),
