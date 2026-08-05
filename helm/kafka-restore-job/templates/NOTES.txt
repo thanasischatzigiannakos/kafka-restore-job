@@ -1,0 +1,16 @@
+1. Review `values.yaml` and set the image repository and tag.
+
+2. Set source and target Kafka bootstrap addresses.
+   Cross-namespace example inside OpenShift:
+   `source-kafka-bootstrap.kafka-source.svc:9092`
+   `target-kafka-bootstrap.kafka-target.svc:9092`
+
+3. If Kafka or S3 credentials are secret, create one secret and point `secretEnv.existingSecret` at it.
+
+4. If Kafka truststores or keystores are stored as files in a secret, set:
+   `kafkaTlsSecrets.source.existingSecret`
+   `kafkaTlsSecrets.target.existingSecret`
+   and align the corresponding `ENGINE_KAFKA_*_TRUSTSTORE_LOCATION` and `ENGINE_KAFKA_*_KEYSTORE_LOCATION` env values.
+
+5. Install with:
+   `helm install <release-name> ./helm/kafka-restore-job -n <app-namespace>`

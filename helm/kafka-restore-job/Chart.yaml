@@ -1,0 +1,6 @@
+apiVersion: v2
+name: kafka-restore-job
+description: Helm chart for deploying the Kafka restore job on Kubernetes or OpenShift
+type: application
+version: 0.1.0
+appVersion: "0.0.1"

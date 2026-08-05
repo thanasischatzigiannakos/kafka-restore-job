@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kafka-restore-job.fullname" . }}
+  labels:
+    {{- include "kafka-restore-job.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "kafka-restore-job.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kafka-restore-job.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "kafka-restore-job.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: app
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "kafka-restore-job.fullname" . }}
+          {{- if .Values.secretEnv.existingSecret }}
+          env:
+            {{- range $envName, $secretKey := .Values.secretEnv.mappings }}
+            - name: {{ $envName }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.secretEnv.existingSecret }}
+                  key: {{ $secretKey }}
+                  optional: true
+            {{- end }}
+          {{- end }}
+          volumeMounts:
+            {{- if .Values.persistence.enabled }}
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+            {{- end }}
+            {{- if .Values.kafkaTlsSecrets.source.existingSecret }}
+            - name: source-kafka-certs
+              mountPath: {{ .Values.kafkaTlsSecrets.source.mountPath }}
+              readOnly: true
+            {{- end }}
+            {{- if .Values.kafkaTlsSecrets.target.existingSecret }}
+            - name: target-kafka-certs
+              mountPath: {{ .Values.kafkaTlsSecrets.target.mountPath }}
+              readOnly: true
+            {{- end }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        {{- if .Values.persistence.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "kafka-restore-job.fullname" . }}
+        {{- end }}
+        {{- if .Values.kafkaTlsSecrets.source.existingSecret }}
+        - name: source-kafka-certs
+          secret:
+            secretName: {{ .Values.kafkaTlsSecrets.source.existingSecret }}
+        {{- end }}
+        {{- if .Values.kafkaTlsSecrets.target.existingSecret }}
+        - name: target-kafka-certs
+          secret:
+            secretName: {{ .Values.kafkaTlsSecrets.target.existingSecret }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

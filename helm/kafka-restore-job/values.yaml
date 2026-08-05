@@ -1,0 +1,113 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/example/kafka-restore-job
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+
+service:
+  type: ClusterIP
+  port: 8080
+  targetPort: 8080
+
+route:
+  enabled: true
+  host: ""
+  tls:
+    enabled: true
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+
+persistence:
+  enabled: true
+  mountPath: /app/data
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+  storageClassName: ""
+
+resources: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+env:
+  SPRING_DATASOURCE_URL: "jdbc:h2:file:/app/data/restore-engine;AUTO_SERVER=TRUE"
+  SPRING_DATASOURCE_DRIVER_CLASS_NAME: "org.h2.Driver"
+  SPRING_DATASOURCE_USERNAME: "sa"
+  SPRING_JPA_HIBERNATE_DDL_AUTO: "update"
+  SPRING_H2_CONSOLE_ENABLED: "false"
+  ENGINE_KAFKA_POLL_TIMEOUT: "PT1S"
+  ENGINE_KAFKA_TRANSACTION_TIMEOUT: "PT1M"
+  ENGINE_KAFKA_REQUEST_TIMEOUT: "PT30S"
+  ENGINE_KAFKA_DELIVERY_TIMEOUT: "PT2M"
+  ENGINE_KAFKA_MAX_EMPTY_POLLS_BEFORE_FINISH: "3"
+  ENGINE_KAFKA_SOURCE_BOOTSTRAP_SERVERS: "source-kafka-bootstrap.kafka-source.svc:9092"
+  ENGINE_KAFKA_TARGET_BOOTSTRAP_SERVERS: "target-kafka-bootstrap.kafka-target.svc:9092"
+  ENGINE_KAFKA_SOURCE_SECURITY_PROTOCOL: "PLAINTEXT"
+  ENGINE_KAFKA_TARGET_SECURITY_PROTOCOL: "PLAINTEXT"
+  ENGINE_KAFKA_PIPELINE_APPLICATION_SOURCE_TOPIC: "application-restore-source"
+  ENGINE_KAFKA_PIPELINE_APPLICATION_TARGET_TOPIC: "application-restore-target"
+  ENGINE_KAFKA_PIPELINE_APPLICATION_GROUP_ID: "application-restore-group"
+  ENGINE_KAFKA_PIPELINE_APPLICATION_TRANSACTIONAL_ID: "application-restore-tx-producer"
+  ENGINE_KAFKA_PIPELINE_ABUSE_SOURCE_TOPIC: "abuse-restore-source"
+  ENGINE_KAFKA_PIPELINE_ABUSE_TARGET_TOPIC: "abuse-restore-target"
+  ENGINE_KAFKA_PIPELINE_ABUSE_GROUP_ID: "abuse-restore-group"
+  ENGINE_KAFKA_PIPELINE_ABUSE_TRANSACTIONAL_ID: "abuse-restore-tx-producer"
+  ENGINE_KAFKA_PIPELINE_NOTIFICATION_SOURCE_TOPIC: "notification-restore-source"
+  ENGINE_KAFKA_PIPELINE_NOTIFICATION_TARGET_TOPIC: "notification-restore-target"
+  ENGINE_KAFKA_PIPELINE_NOTIFICATION_GROUP_ID: "notification-restore-group"
+  ENGINE_KAFKA_PIPELINE_NOTIFICATION_TRANSACTIONAL_ID: "notification-restore-tx-producer"
+  ENGINE_S3_BUCKET: "restore-default-bucket"
+  ENGINE_S3_REGION: "eu-west-1"
+  ENGINE_S3_PATH_STYLE_ACCESS: "false"
+  ENGINE_S3_CONNECTION_TIMEOUT: "PT5S"
+  ENGINE_S3_READ_TIMEOUT: "PT30S"
+  ENGINE_ZOOKEEPER_CONNECT_STRING: "zookeeper.zookeeper.svc:2181"
+  ENGINE_ZOOKEEPER_SESSION_TIMEOUT: "PT30S"
+  ENGINE_ZOOKEEPER_CONNECTION_TIMEOUT: "PT10S"
+  ENGINE_ZOOKEEPER_COMMAND_PROCESSOR_PATH: "/restore-engine/command-processor"
+  ENGINE_ZOOKEEPER_COMMAND_PROCESSOR_KEY: "restore-engine"
+
+secretEnv:
+  existingSecret: ""
+  mappings:
+    SPRING_DATASOURCE_PASSWORD: spring-datasource-password
+    ENGINE_KAFKA_SOURCE_SASL_JAAS_CONFIG: source-sasl-jaas-config
+    ENGINE_KAFKA_TARGET_SASL_JAAS_CONFIG: target-sasl-jaas-config
+    ENGINE_KAFKA_SOURCE_TRUSTSTORE_PASSWORD: source-truststore-password
+    ENGINE_KAFKA_SOURCE_KEYSTORE_PASSWORD: source-keystore-password
+    ENGINE_KAFKA_SOURCE_KEY_PASSWORD: source-key-password
+    ENGINE_KAFKA_TARGET_TRUSTSTORE_PASSWORD: target-truststore-password
+    ENGINE_KAFKA_TARGET_KEYSTORE_PASSWORD: target-keystore-password
+    ENGINE_KAFKA_TARGET_KEY_PASSWORD: target-key-password
+    ENGINE_S3_ACCESS_KEY: s3-access-key
+    ENGINE_S3_SECRET_KEY: s3-secret-key
+
+kafkaTlsSecrets:
+  source:
+    existingSecret: ""
+    mountPath: /etc/kafka/source
+  target:
+    existingSecret: ""
+    mountPath: /etc/kafka/target
