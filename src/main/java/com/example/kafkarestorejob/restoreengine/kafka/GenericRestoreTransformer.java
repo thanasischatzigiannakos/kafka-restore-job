@@ -5,9 +5,21 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.springframework.stereotype.Component;
 
+/**
+ * Forwards source payload bytes unchanged while adding restore provenance headers.
+ */
 @Component
 public class GenericRestoreTransformer implements RestoreTransformer {
 
+    /**
+     * Creates the target record by copying the source key, payload, partition, and headers and by
+     * appending restore metadata headers.
+     *
+     * @param restoreType the logical restore type
+     * @param targetTopic the target topic
+     * @param sourceRecord the source record being forwarded
+     * @return the target producer record
+     */
     @Override
     public ProducerRecord<String, byte[]> transform(
             String restoreType,

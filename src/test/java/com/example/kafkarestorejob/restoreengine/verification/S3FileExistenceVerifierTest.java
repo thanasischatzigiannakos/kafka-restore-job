@@ -82,6 +82,27 @@ class S3FileExistenceVerifierTest {
     }
 
     @Test
+    void validatesHexChecksumWithPrefixAndQuotes() throws Exception {
+        byte[] digest = sha256("payload");
+        when(client.headObject(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(HeadObjectResponse.builder()
+                        .checksumSHA256(Base64.getEncoder().encodeToString(digest))
+                        .build());
+
+        assertDoesNotThrow(() -> verifier.verifyExists(
+                CONTEXT,
+                "application",
+                new FileReference(
+                        "field.path",
+                        "object-key",
+                        "\"sha-256:" + bytesToHex(digest) + "\""
+                )
+        ));
+
+        verify(client, never()).getObject(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
     void streamsObjectWhenChecksumMetadataIsUnavailable() throws Exception {
         byte[] payload = "payload".getBytes(StandardCharsets.UTF_8);
         when(client.headObject(org.mockito.ArgumentMatchers.any()))
@@ -139,11 +160,27 @@ class S3FileExistenceVerifierTest {
         ));
     }
 
+    @Test
+    void rejectsUnsupportedChecksumFormats() {
+        when(client.headObject(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(HeadObjectResponse.builder().build());
+
+        assertThrows(RestorePayloadValidationException.class, () -> verifier.verifyExists(
+                CONTEXT,
+                "application",
+                new FileReference("field.path", "object-key", "not-a-supported-checksum")
+        ));
+    }
+
     private byte[] sha256(String value) throws Exception {
         return sha256(value.getBytes(StandardCharsets.UTF_8));
     }
 
     private byte[] sha256(byte[] value) throws Exception {
         return MessageDigest.getInstance("SHA-256").digest(value);
+    }
+
+    private String bytesToHex(byte[] value) {
+        return java.util.HexFormat.of().formatHex(value);
     }
 }

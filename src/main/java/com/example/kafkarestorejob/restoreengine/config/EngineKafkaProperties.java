@@ -12,6 +12,13 @@ import java.util.Map;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
 
+/**
+ * Binds Kafka client settings for the restore engine.
+ *
+ * <p>The root properties provide shared defaults for both Kafka clusters, while the optional
+ * {@code source} and {@code target} sections override security settings for cross-cluster
+ * deployments. Individual restore pipelines are keyed by restore type.
+ */
 @Validated
 @ConfigurationProperties(prefix = "engine.kafka")
 public class EngineKafkaProperties {
@@ -93,10 +100,22 @@ public class EngineKafkaProperties {
         this.targetBootstrapServers = targetBootstrapServers;
     }
 
+    /**
+     * Returns the bootstrap servers used by source consumers.
+     *
+     * @return the source-specific bootstrap servers, or the shared bootstrap servers when no
+     *         source override is configured
+     */
     public String requireSourceBootstrapServers() {
         return hasText(sourceBootstrapServers) ? sourceBootstrapServers : bootstrapServers;
     }
 
+    /**
+     * Returns the bootstrap servers used by target producers.
+     *
+     * @return the target-specific bootstrap servers, or the shared bootstrap servers when no
+     *         target override is configured
+     */
     public String requireTargetBootstrapServers() {
         return hasText(targetBootstrapServers) ? targetBootstrapServers : bootstrapServers;
     }
@@ -245,6 +264,13 @@ public class EngineKafkaProperties {
         this.pipelines = pipelines;
     }
 
+    /**
+     * Resolves the configured pipeline for a restore type.
+     *
+     * @param restoreType the logical restore type key
+     * @return the configured pipeline
+     * @throws IllegalArgumentException when the type is not configured
+     */
     public PipelineProperties requirePipeline(String restoreType) {
         PipelineProperties pipelineProperties = pipelines.get(restoreType);
         if (pipelineProperties == null) {
@@ -253,22 +279,48 @@ public class EngineKafkaProperties {
         return pipelineProperties;
     }
 
+    /**
+     * Lists all configured restore types in declaration order.
+     *
+     * @return the configured restore-type keys
+     */
     public List<String> availableRestoreTypes() {
         return List.copyOf(pipelines.keySet());
     }
 
+    /**
+     * Resolves effective source-side Kafka security settings by overlaying source-specific values
+     * on top of the shared defaults.
+     *
+     * @return the effective source security settings
+     */
     public SecurityProperties resolveSourceSecurityProperties() {
         return SecurityProperties.withFallback(source, this);
     }
 
+    /**
+     * Resolves effective target-side Kafka security settings by overlaying target-specific values
+     * on top of the shared defaults.
+     *
+     * @return the effective target security settings
+     */
     public SecurityProperties resolveTargetSecurityProperties() {
         return SecurityProperties.withFallback(target, this);
     }
 
+    /**
+     * Returns whether the provided value contains non-whitespace text.
+     *
+     * @param value the value to inspect
+     * @return {@code true} when the value contains at least one non-whitespace character
+     */
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
     }
 
+    /**
+     * Holds the topic and client identities for one logical restore pipeline.
+     */
     public static class PipelineProperties {
 
         @NotBlank
@@ -316,6 +368,9 @@ public class EngineKafkaProperties {
         }
     }
 
+    /**
+     * Holds one side's Kafka security settings and can merge them with the shared defaults.
+     */
     public static class SecurityProperties {
 
         private String securityProtocol;
@@ -418,6 +473,13 @@ public class EngineKafkaProperties {
             this.keystoreType = keystoreType;
         }
 
+        /**
+         * Merges the side-specific overrides with the shared root properties.
+         *
+         * @param override the side-specific override block
+         * @param fallback the shared root properties
+         * @return the effective security settings
+         */
         private static SecurityProperties withFallback(
                 SecurityProperties override,
                 EngineKafkaProperties fallback
@@ -466,6 +528,13 @@ public class EngineKafkaProperties {
             return resolved;
         }
 
+        /**
+         * Picks the preferred value when present, otherwise falls back to the shared one.
+         *
+         * @param preferred the side-specific value
+         * @param fallback the shared fallback value
+         * @return the resolved value
+         */
         private static String firstNonBlank(String preferred, String fallback) {
             if (preferred != null && !preferred.isBlank()) {
                 return preferred;

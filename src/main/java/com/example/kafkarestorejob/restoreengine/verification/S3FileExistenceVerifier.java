@@ -23,6 +23,10 @@ import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 
+/**
+ * Validates that binary references point to existing S3 objects and, when provided, that the
+ * object checksum matches the expected payload checksum.
+ */
 @Component
 public class S3FileExistenceVerifier {
 
@@ -33,6 +37,12 @@ public class S3FileExistenceVerifier {
     private final String bucket;
     private final S3Client client;
 
+    /**
+     * Creates the verifier and its underlying S3 client.
+     *
+     * @param properties the S3 settings containing the bucket name
+     * @param clientFactory the client factory used to create the S3 client
+     */
     public S3FileExistenceVerifier(
             EngineS3Properties properties,
             S3ClientFactory clientFactory
@@ -41,6 +51,13 @@ public class S3FileExistenceVerifier {
         this.client = clientFactory.createClient();
     }
 
+    /**
+     * Verifies object existence and optionally validates the expected checksum.
+     *
+     * @param context the restore context used for diagnostics
+     * @param messageType the logical message type under validation
+     * @param reference the referenced S3 object
+     */
     public void verifyExists(
             RestoreRecordValidationContext context,
             String messageType,
@@ -73,6 +90,14 @@ public class S3FileExistenceVerifier {
         }
     }
 
+    /**
+     * Loads metadata for the referenced object using {@code headObject}.
+     *
+     * @param context the restore context used for diagnostics
+     * @param messageType the logical message type under validation
+     * @param reference the referenced S3 object
+     * @return the object metadata
+     */
     private HeadObjectResponse headObject(
             RestoreRecordValidationContext context,
             String messageType,
@@ -102,6 +127,15 @@ public class S3FileExistenceVerifier {
         }
     }
 
+    /**
+     * Creates the validation exception used when the referenced binary is missing.
+     *
+     * @param context the restore context used for diagnostics
+     * @param messageType the logical message type under validation
+     * @param reference the referenced S3 object
+     * @param exception the originating S3 exception
+     * @return the wrapped validation exception
+     */
     private RestorePayloadValidationException missingBinary(
             RestoreRecordValidationContext context,
             String messageType,
@@ -120,6 +154,16 @@ public class S3FileExistenceVerifier {
         );
     }
 
+    /**
+     * Resolves the object's actual SHA-256 either from metadata or by streaming the object body.
+     *
+     * @param objectKey the S3 object key
+     * @param metadata the metadata loaded via {@code headObject}
+     * @param context the restore context used for diagnostics
+     * @param messageType the logical message type under validation
+     * @param reference the referenced S3 object
+     * @return the actual checksum bytes
+     */
     private byte[] actualChecksum(
             String objectKey,
             HeadObjectResponse metadata,
@@ -134,6 +178,16 @@ public class S3FileExistenceVerifier {
         return streamSha256(objectKey, context, messageType, reference);
     }
 
+    /**
+     * Streams the object body and calculates its SHA-256 checksum without loading the entire body
+     * into memory.
+     *
+     * @param objectKey the S3 object key
+     * @param context the restore context used for diagnostics
+     * @param messageType the logical message type under validation
+     * @param reference the referenced S3 object
+     * @return the calculated checksum bytes
+     */
     private byte[] streamSha256(
             String objectKey,
             RestoreRecordValidationContext context,
@@ -184,6 +238,12 @@ public class S3FileExistenceVerifier {
         }
     }
 
+    /**
+     * Normalizes the expected checksum text from the payload into raw SHA-256 bytes.
+     *
+     * @param checksum the payload checksum text
+     * @return the normalized checksum bytes, or empty when the payload omitted a checksum
+     */
     private Optional<byte[]> normalizeExpectedChecksum(String checksum) {
         if (checksum == null) {
             return Optional.empty();
@@ -208,6 +268,12 @@ public class S3FileExistenceVerifier {
         }
     }
 
+    /**
+     * Removes one pair of wrapping quotes from a checksum value.
+     *
+     * @param value the raw checksum value
+     * @return the unquoted checksum
+     */
     private String stripQuotes(String value) {
         if (value.length() >= 2 && value.startsWith("\"") && value.endsWith("\"")) {
             return value.substring(1, value.length() - 1).trim();
@@ -215,6 +281,12 @@ public class S3FileExistenceVerifier {
         return value;
     }
 
+    /**
+     * Removes supported SHA-256 textual prefixes from a checksum value.
+     *
+     * @param value the raw checksum value
+     * @return the checksum without an algorithm prefix
+     */
     private String stripSha256Prefix(String value) {
         String lower = value.toLowerCase(Locale.ROOT);
         if (lower.startsWith("sha-256:")) {
@@ -226,6 +298,12 @@ public class S3FileExistenceVerifier {
         return value;
     }
 
+    /**
+     * Returns whether the supplied string is valid even-length hexadecimal text.
+     *
+     * @param value the candidate checksum text
+     * @return {@code true} when the text is valid hexadecimal
+     */
     private boolean isHex(String value) {
         if ((value.length() & 1) != 0 || value.isEmpty()) {
             return false;
@@ -242,6 +320,11 @@ public class S3FileExistenceVerifier {
         return true;
     }
 
+    /**
+     * Creates a SHA-256 message digest for checksum calculation.
+     *
+     * @return the digest instance
+     */
     private MessageDigest sha256Digest() {
         try {
             return MessageDigest.getInstance("SHA-256");

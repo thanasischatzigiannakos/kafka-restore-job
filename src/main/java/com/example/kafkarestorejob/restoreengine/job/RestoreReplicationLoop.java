@@ -29,6 +29,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+/**
+ * Orchestrates the restore flow for one configured restore type.
+ *
+ * <p>The loop consumes source records, validates each record through the resolved message handler,
+ * writes the original bytes to the target topic, and advances the source offset only after the
+ * target transaction commits.
+ */
 @Component
 public class RestoreReplicationLoop {
 
@@ -48,6 +55,17 @@ public class RestoreReplicationLoop {
         this.transformer = transformer;
     }
 
+    /**
+     * Executes the restore loop for one configured restore type.
+     *
+     * @param restoreType the logical restore type being executed
+     * @param pipeline the configured source and target topics plus client identities
+     * @param restoreFromTimestamp the optional timestamp boundary used when starting from time-based
+     *                             offsets
+     * @param context the mutable job execution context
+     * @param resumeFromCommittedOffsets whether to resume from committed source offsets
+     * @return the restore execution summary
+     */
     public RestoreExecutionResult restore(
             String restoreType,
             EngineKafkaProperties.PipelineProperties pipeline,
@@ -64,6 +82,17 @@ public class RestoreReplicationLoop {
         );
     }
 
+    /**
+     * Performs the full restore lifecycle including assignment, seek, boundary capture, polling,
+     * validation, target writes, and source offset commits.
+     *
+     * @param restoreType the logical restore type being executed
+     * @param pipeline the configured pipeline
+     * @param restoreFromTimestamp the optional time-based starting point
+     * @param context the mutable job execution context
+     * @param resumeFromCommittedOffsets whether to resume from committed source offsets
+     * @return the restore execution summary
+     */
     private RestoreExecutionResult restoreInternal(
             String restoreType,
             EngineKafkaProperties.PipelineProperties pipeline,
@@ -145,6 +174,21 @@ public class RestoreReplicationLoop {
         );
     }
 
+    /**
+     * Polls Kafka once and restores any records that fall within the captured restore boundary.
+     *
+     * @param consumer the source consumer
+     * @param producer the target producer
+     * @param context the mutable job execution context
+     * @param restoreType the logical restore type being executed
+     * @param pipeline the configured pipeline
+     * @param restoreEndOffsets the fixed exclusive boundary captured at restore start
+     * @param engineKafkaProperties the bound Kafka runtime settings
+     * @param loopState the mutable loop state
+     * @param transformer the target-record transformer
+     * @param messageHandler the resolved per-type validator
+     * @return the outcome of the poll iteration
+     */
     private PollOutcome pollAndRestoreRecords(
             KafkaConsumer<String, byte[]> consumer,
             KafkaProducer<String, byte[]> producer,
@@ -179,6 +223,15 @@ public class RestoreReplicationLoop {
         );
     }
 
+    /**
+     * Handles an empty poll by incrementing the empty-poll counter and failing when the configured
+     * limit is reached before the boundary is exhausted.
+     *
+     * @param context the mutable job execution context
+     * @param engineKafkaProperties the bound Kafka runtime settings
+     * @param loopState the mutable loop state
+     * @return the empty poll outcome
+     */
     private PollOutcome handleEmptyPoll(
             RestoreJobExecutionContext context,
             EngineKafkaProperties engineKafkaProperties,
@@ -194,6 +247,21 @@ public class RestoreReplicationLoop {
         return PollOutcome.empty(emptyPolls);
     }
 
+    /**
+     * Restores each restorable source record from one Kafka poll result.
+     *
+     * @param consumer the source consumer
+     * @param producer the target producer
+     * @param context the mutable job execution context
+     * @param restoreType the logical restore type being executed
+     * @param pipeline the configured pipeline
+     * @param loopState the mutable loop state
+     * @param polledRecords the source records returned by Kafka
+     * @param restoreEndOffsets the fixed exclusive boundary captured at restore start
+     * @param transformer the target-record transformer
+     * @param messageHandler the resolved per-type validator
+     * @return the outcome of restoring the poll result
+     */
     private PollOutcome restorePolledRecords(
             KafkaConsumer<String, byte[]> consumer,
             KafkaProducer<String, byte[]> producer,
@@ -364,6 +432,22 @@ public class RestoreReplicationLoop {
         return new RestoreEngineException("Restore record failed", exception);
     }
 
+    /**
+     * Restores one source record in its own target transaction and commits the source offset only
+     * after the target commit succeeds.
+     *
+     * @param consumer the source consumer
+     * @param producer the target producer
+     * @param sourceRecord the source record being restored
+     * @param offsets the next source offsets to commit for this record
+     * @param context the mutable job execution context
+     * @param restoreType the logical restore type being executed
+     * @param pipeline the configured pipeline
+     * @param finalRecord whether committing this record reaches the captured restore boundary
+     * @param transformer the target-record transformer
+     * @param messageHandler the resolved per-type validator
+     * @return the outcome of the per-record transaction
+     */
     private RecordTransactionOutcome restoreRecordTransaction(
             KafkaConsumer<String, byte[]> consumer,
             KafkaProducer<String, byte[]> producer,
@@ -420,6 +504,14 @@ public class RestoreReplicationLoop {
         }
     }
 
+    /**
+     * Commits the target-side transaction and marks the job as finalizing when the final restore
+     * boundary record is about to commit.
+     *
+     * @param producer the target producer
+     * @param context the mutable job execution context
+     * @param finalRecord whether this commit reaches the restore boundary
+     */
     private void commitProducerTransaction(
             KafkaProducer<String, byte[]> producer,
             RestoreJobExecutionContext context,
@@ -437,6 +529,16 @@ public class RestoreReplicationLoop {
         producer.commitTransaction();
     }
 
+    /**
+     * Commits the source consumer offsets only after the corresponding target transaction has
+     * committed successfully.
+     *
+     * @param consumer the source consumer
+     * @param offsets the next source offsets to commit
+     * @param context the mutable job execution context
+     * @param sourceRecord the source record whose offset is being committed
+     * @param restoreType the logical restore type being executed
+     */
     private void commitSourceOffsets(
             KafkaConsumer<String, byte[]> consumer,
             Map<TopicPartition, OffsetAndMetadata> offsets,
@@ -501,6 +603,14 @@ public class RestoreReplicationLoop {
         return PollOutcome.noCommit(loopState.getEmptyPolls());
     }
 
+    /**
+     * Builds the record-level validation context used for diagnostics in the message handlers.
+     *
+     * @param context the mutable job execution context
+     * @param restoreType the logical restore type being executed
+     * @param sourceRecord the source record under validation
+     * @return the validation context
+     */
     private RestoreRecordValidationContext buildValidationContext(
             RestoreJobExecutionContext context,
             String restoreType,
@@ -515,6 +625,16 @@ public class RestoreReplicationLoop {
         );
     }
 
+    /**
+     * Positions the consumer either at committed offsets or at the configured start point for any
+     * partition that has no committed offset yet.
+     *
+     * @param consumer the source consumer
+     * @param sourceTopic the source topic name
+     * @param restoreFromTimestamp the optional time-based starting point
+     * @param assignmentPollTimeout the timeout used to wait for partition assignment
+     * @param resumeFromCommittedOffsets whether committed offsets should be used when present
+     */
     private void seekToStartingOffsets(
             KafkaConsumer<String, byte[]> consumer,
             String sourceTopic,
@@ -563,6 +683,15 @@ public class RestoreReplicationLoop {
         );
     }
 
+    /**
+     * Seeks the provided partitions either to the beginning or to the offsets resolved from the
+     * requested timestamp.
+     *
+     * @param consumer the source consumer
+     * @param sourceTopic the source topic name
+     * @param restoreFromTimestamp the optional time-based starting point
+     * @param partitions the partitions that still need an initial position
+     */
     private void seekPartitionsWithoutCommittedOffsets(
             KafkaConsumer<String, byte[]> consumer,
             String sourceTopic,
@@ -614,6 +743,13 @@ public class RestoreReplicationLoop {
         return partitionList;
     }
 
+    /**
+     * Waits until Kafka assigns at least one partition to the consumer.
+     *
+     * @param consumer the source consumer
+     * @param assignmentPollTimeout the timeout used while waiting for assignment
+     * @return the assigned partitions
+     */
     private Set<TopicPartition> awaitAssignment(
             KafkaConsumer<String, byte[]> consumer,
             Duration assignmentPollTimeout
@@ -643,6 +779,12 @@ public class RestoreReplicationLoop {
         return offsets;
     }
 
+    /**
+     * Captures the exclusive end offsets that define the immutable restore boundary for this run.
+     *
+     * @param consumer the source consumer
+     * @return the captured end offsets per assigned partition
+     */
     private Map<TopicPartition, Long> captureEndOffsets(KafkaConsumer<String, byte[]> consumer) {
         Set<TopicPartition> assignment = consumer.assignment();
         if (assignment.isEmpty()) {
@@ -697,6 +839,13 @@ public class RestoreReplicationLoop {
         );
     }
 
+    /**
+     * Aborts the current producer transaction and preserves any abort failure as a suppressed
+     * exception on the original failure.
+     *
+     * @param producer the target producer
+     * @param originalException the failure that triggered the abort
+     */
     private void abortTransactionSafely(
             KafkaProducer<String, byte[]> producer,
             Exception originalException

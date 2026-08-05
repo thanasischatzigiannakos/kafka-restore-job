@@ -13,6 +13,9 @@ import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.springframework.stereotype.Component;
 
+/**
+ * Creates Kafka consumers and producers for the restore engine.
+ */
 @Component
 public class KafkaClientConfiguration {
 
@@ -27,10 +30,22 @@ public class KafkaClientConfiguration {
         this.securityConfigHelper = securityConfigHelper;
     }
 
+    /**
+     * Resolves the configured pipeline for a restore type.
+     *
+     * @param restoreType the logical restore type
+     * @return the configured pipeline
+     */
     public EngineKafkaProperties.PipelineProperties requirePipeline(String restoreType) {
         return engineKafkaProperties.requirePipeline(restoreType);
     }
 
+    /**
+     * Creates the source consumer used by the restore loop.
+     *
+     * @param restoreType the restore type being executed
+     * @return a configured Kafka consumer
+     */
     public KafkaConsumer<String, byte[]> createConsumer(String restoreType) {
         EngineKafkaProperties.PipelineProperties pipeline = requirePipeline(restoreType);
         Map<String, Object> config = new HashMap<>();
@@ -49,6 +64,12 @@ public class KafkaClientConfiguration {
         return new KafkaConsumer<>(config);
     }
 
+    /**
+     * Creates a preview consumer for message inspection outside the restore loop.
+     *
+     * @param previewConsumerId the preview session identifier
+     * @return a configured preview consumer
+     */
     public KafkaConsumer<String, byte[]> createPreviewConsumer(String previewConsumerId) {
         Map<String, Object> config = new HashMap<>();
         config.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, engineKafkaProperties.getBootstrapServers());
@@ -66,6 +87,12 @@ public class KafkaClientConfiguration {
         return new KafkaConsumer<>(config);
     }
 
+    /**
+     * Creates and initializes the transactional producer used to write restored records.
+     *
+     * @param restoreType the restore type being executed
+     * @return an initialized transactional Kafka producer
+     */
     public KafkaProducer<String, byte[]> createProducer(String restoreType) {
         EngineKafkaProperties.PipelineProperties pipeline = requirePipeline(restoreType);
         Map<String, Object> config = new HashMap<>();
@@ -87,6 +114,11 @@ public class KafkaClientConfiguration {
         return producer;
     }
 
+    /**
+     * Returns the bound Kafka properties for runtime tuning access.
+     *
+     * @return the engine Kafka properties
+     */
     public EngineKafkaProperties getEngineKafkaProperties() {
         return engineKafkaProperties;
     }
