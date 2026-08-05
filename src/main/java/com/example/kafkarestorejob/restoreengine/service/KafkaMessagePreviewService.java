@@ -17,15 +17,31 @@ import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 import org.springframework.stereotype.Service;
 
+/**
+ * Reads a bounded preview of records from a configured source or target topic.
+ */
 @Service
 public class KafkaMessagePreviewService {
 
     private final KafkaClientConfiguration kafkaClientConfiguration;
 
+    /**
+     * Creates the service with the Kafka client configuration used to build preview consumers.
+     *
+     * @param kafkaClientConfiguration the Kafka client configuration
+     */
     public KafkaMessagePreviewService(KafkaClientConfiguration kafkaClientConfiguration) {
         this.kafkaClientConfiguration = kafkaClientConfiguration;
     }
 
+    /**
+     * Returns a bounded preview of records from the selected topic of a configured pipeline.
+     *
+     * @param restoreType the logical restore type whose pipeline should be previewed
+     * @param topicSelector the topic selector, typically {@code source} or {@code target}
+     * @param limit the maximum number of records to preview
+     * @return the preview response
+     */
     public KafkaMessagePreviewResponse preview(String restoreType, String topicSelector, int limit) {
         EngineKafkaProperties.PipelineProperties pipeline = kafkaClientConfiguration.requirePipeline(restoreType);
         String topic = "target".equalsIgnoreCase(topicSelector) ? pipeline.getTargetTopic() : pipeline.getSourceTopic();
@@ -65,12 +81,24 @@ public class KafkaMessagePreviewService {
         }
     }
 
+    /**
+     * Extracts and Base64-encodes the headers of a Kafka record.
+     *
+     * @param record the Kafka record
+     * @return the encoded headers keyed by header name
+     */
     private Map<String, String> extractHeaders(ConsumerRecord<String, byte[]> record) {
         Map<String, String> headers = new LinkedHashMap<>();
         record.headers().forEach(header -> headers.put(header.key(), encodeBytes(header.value())));
         return headers;
     }
 
+    /**
+     * Encodes the supplied bytes as Base64 for API transport.
+     *
+     * @param bytes the bytes to encode
+     * @return the Base64-encoded value, or an empty string when the input is {@code null}
+     */
     private String encodeBytes(byte[] bytes) {
         return bytes == null ? "" : Base64.getEncoder().encodeToString(bytes);
     }

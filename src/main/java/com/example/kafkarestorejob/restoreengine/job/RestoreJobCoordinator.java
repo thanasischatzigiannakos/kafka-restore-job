@@ -15,6 +15,9 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Service;
 
+/**
+ * Coordinates restore job lifecycle management and asynchronous execution.
+ */
 @Service
 public class RestoreJobCoordinator {
 
@@ -27,6 +30,14 @@ public class RestoreJobCoordinator {
     private final Map<UUID, RestoreJobExecutionContext> runningJobs = new ConcurrentHashMap<>();
     private final Object activeJobLock = new Object();
 
+    /**
+     * Creates the coordinator with the restore loop, pipeline configuration, and asynchronous
+     * executor.
+     *
+     * @param restoreReplicationLoop the restore loop
+     * @param engineKafkaProperties the Kafka pipeline properties
+     * @param restoreJobExecutor the asynchronous restore-job executor
+     */
     public RestoreJobCoordinator(
             RestoreReplicationLoop restoreReplicationLoop,
             EngineKafkaProperties engineKafkaProperties,
@@ -37,6 +48,13 @@ public class RestoreJobCoordinator {
         this.restoreJobExecutor = restoreJobExecutor;
     }
 
+    /**
+     * Creates and schedules a new restore job.
+     *
+     * @param restoreType the logical restore type to execute
+     * @param restoreFromTimestamp the optional timestamp used to position the source consumer
+     * @return the accepted restore job identifier
+     */
     public RestoreJobStartResponse startJob(String restoreType, Instant restoreFromTimestamp) {
         UUID jobId = UUID.randomUUID();
         engineKafkaProperties.requirePipeline(restoreType);
@@ -76,10 +94,21 @@ public class RestoreJobCoordinator {
         }
     }
 
+    /**
+     * Returns the current state of one restore job.
+     *
+     * @param jobId the restore job identifier
+     * @return the restore job response
+     */
     public RestoreJobResponse getJob(UUID jobId) {
         return RestoreJobResponse.fromInMemoryJob(getExistingJob(jobId));
     }
 
+    /**
+     * Lists all known in-memory restore jobs ordered by request time.
+     *
+     * @return the restore job responses
+     */
     public List<RestoreJobResponse> listJobs() {
         return jobs.values().stream()
                 .map(RestoreJobResponse::fromInMemoryJob)
@@ -87,6 +116,12 @@ public class RestoreJobCoordinator {
                 .toList();
     }
 
+    /**
+     * Requests cancellation of a pending or running restore job.
+     *
+     * @param jobId the restore job identifier
+     * @return the updated restore job response
+     */
     public RestoreJobResponse requestCancellation(UUID jobId) {
         InMemoryRestoreJob job = getExistingJob(jobId);
         RestoreJobExecutionContext context = job.getContext();
@@ -99,6 +134,14 @@ public class RestoreJobCoordinator {
         return RestoreJobResponse.fromInMemoryJob(job);
     }
 
+    /**
+     * Executes one restore job from the asynchronous executor.
+     *
+     * @param jobId the restore job identifier
+     * @param restoreType the logical restore type
+     * @param restoreFromTimestamp the optional timestamp used to position the source consumer
+     * @param job the in-memory restore job state
+     */
     private void executeJob(
             UUID jobId,
             String restoreType,
@@ -133,6 +176,14 @@ public class RestoreJobCoordinator {
         }
     }
 
+    /**
+     * Creates the exception used when cancellation is requested for a job in a non-cancellable
+     * state.
+     *
+     * @param jobId the restore job identifier
+     * @param status the current job status
+     * @return the rejection exception
+     */
     private IllegalStateException cancellationRejected(UUID jobId, RestoreJobStatus status) {
         return new IllegalStateException(
                 "Cancellation rejected for restore job "
@@ -142,6 +193,12 @@ public class RestoreJobCoordinator {
         );
     }
 
+    /**
+     * Returns an existing in-memory restore job or fails when the job id is unknown.
+     *
+     * @param jobId the restore job identifier
+     * @return the existing in-memory restore job
+     */
     private InMemoryRestoreJob getExistingJob(UUID jobId) {
         InMemoryRestoreJob job = jobs.get(jobId);
         if (job == null) {

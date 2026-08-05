@@ -5,11 +5,19 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
+/**
+ * Configures asynchronous execution for background restore jobs.
+ */
 @Configuration
 @EnableAsync
 public class AsyncConfiguration {
 
     @Bean(name = "restoreJobExecutor")
+    /**
+     * Creates the task executor used to run restore jobs asynchronously.
+     *
+     * @return the restore job task executor
+     */
     public ThreadPoolTaskExecutor restoreJobExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
         executor.setThreadNamePrefix("restore-job-");

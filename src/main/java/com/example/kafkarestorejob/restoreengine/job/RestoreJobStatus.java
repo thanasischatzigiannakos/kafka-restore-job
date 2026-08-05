@@ -1,5 +1,8 @@
 package com.example.kafkarestorejob.restoreengine.job;
 
+/**
+ * Enumerates the lifecycle states of a restore job.
+ */
 public enum RestoreJobStatus {
     PENDING,
     RUNNING,
