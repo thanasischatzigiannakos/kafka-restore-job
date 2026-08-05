@@ -17,6 +17,7 @@ import com.example.kafkarestorejob.restoreengine.serialization.model.AbuseRestor
 import com.example.kafkarestorejob.restoreengine.serialization.model.ApplicationRestoreMessage;
 import com.example.kafkarestorejob.restoreengine.serialization.model.NotificationRestoreMessage;
 import com.example.kafkarestorejob.restoreengine.verification.S3FileExistenceVerifier;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.UUID;
@@ -25,20 +26,16 @@ import org.junit.jupiter.api.Test;
 
 class MessageHandlersTest {
 
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
     @Test
     void handlersExposeExpectedTypesAndBinaryCapabilities() {
         ApplicationMessageHandler applicationHandler =
-                new TestApplicationMessageHandler(
-                        mock(S3FileExistenceVerifier.class),
-                        applicationMessage()
-                );
+                new ApplicationMessageHandler(mock(S3FileExistenceVerifier.class));
         AbuseMessageHandler abuseHandler =
-                new TestAbuseMessageHandler(
-                        mock(S3FileExistenceVerifier.class),
-                        abuseMessage("abuse-1")
-                );
+                new AbuseMessageHandler(mock(S3FileExistenceVerifier.class));
         NotificationMessageHandler notificationHandler =
-                new TestNotificationMessageHandler(notificationMessage("notification"));
+                new NotificationMessageHandler();
 
         assertEquals("application", applicationHandler.getType());
         assertEquals("abuse", abuseHandler.getType());
@@ -49,57 +46,67 @@ class MessageHandlersTest {
     }
 
     @Test
-    void notificationHandlerAcceptsMatchingPayloadWithoutS3Validation() {
-        NotificationMessageHandler handler =
-                new TestNotificationMessageHandler(notificationMessage("notification"));
+    void notificationHandlerAcceptsMatchingPayloadWithoutS3Validation() throws Exception {
+        NotificationMessageHandler handler = new NotificationMessageHandler();
 
-        handler.validate(sourceRecord(), context("notification"));
+        handler.validate(
+                sourceRecord(jsonBytes(notificationMessage("notification"))),
+                context("notification")
+        );
     }
 
     @Test
-    void notificationHandlerRejectsWrongType() {
-        NotificationMessageHandler handler =
-                new TestNotificationMessageHandler(notificationMessage("application"));
+    void notificationHandlerRejectsWrongType() throws Exception {
+        NotificationMessageHandler handler = new NotificationMessageHandler();
 
         assertThrows(
                 MessageTypeMismatchException.class,
-                () -> handler.validate(sourceRecord(), context("notification"))
+                () -> handler.validate(
+                        sourceRecord(jsonBytes(notificationMessage("application"))),
+                        context("notification")
+                )
         );
     }
 
     @Test
     void notificationHandlerWrapsParsingFailures() {
-        NotificationMessageHandler handler =
-                new TestNotificationMessageHandler(new IllegalArgumentException("parse failed"));
+        NotificationMessageHandler handler = new NotificationMessageHandler();
 
         RestorePayloadValidationException exception = assertThrows(
                 RestorePayloadValidationException.class,
-                () -> handler.validate(sourceRecord(), context("notification"))
+                () -> handler.validate(
+                        sourceRecord("{".getBytes(StandardCharsets.UTF_8)),
+                        context("notification")
+                )
         );
 
         assertNotNull(exception.getCause());
     }
 
     @Test
-    void applicationHandlerValidatesAllKnownBinaryReferences() {
+    void applicationHandlerValidatesAllKnownBinaryReferences() throws Exception {
         S3FileExistenceVerifier verifier = mock(S3FileExistenceVerifier.class);
-        ApplicationMessageHandler handler =
-                new TestApplicationMessageHandler(verifier, applicationMessage());
+        ApplicationMessageHandler handler = new ApplicationMessageHandler(verifier);
 
-        handler.validate(sourceRecord(), context("application"));
+        handler.validate(
+                sourceRecord(jsonBytes(applicationMessage())),
+                context("application")
+        );
 
         verify(verifier, times(6)).verifyExists(any(), eq("application"), any());
     }
 
     @Test
-    void applicationHandlerRejectsWrongTypeBeforeS3Validation() {
+    void applicationHandlerRejectsWrongTypeBeforeS3Validation() throws Exception {
         S3FileExistenceVerifier verifier = mock(S3FileExistenceVerifier.class);
-        ApplicationMessageHandler handler =
-                new TestApplicationMessageHandler(verifier, applicationMessage("notification"));
+        ApplicationMessageHandler handler = new ApplicationMessageHandler(verifier);
 
         assertThrows(
                 MessageTypeMismatchException.class,
-                () -> handler.validate(sourceRecord(), context("application"))
+                () -> handler.validate(
+                        sourceRecord(jsonBytes(applicationMessage("notification"))),
+                        context("application")
+                )
         );
 
         verifyNoInteractions(verifier);
@@ -108,12 +115,14 @@ class MessageHandlersTest {
     @Test
     void applicationHandlerWrapsParsingFailures() {
         S3FileExistenceVerifier verifier = mock(S3FileExistenceVerifier.class);
-        ApplicationMessageHandler handler =
-                new TestApplicationMessageHandler(verifier, new IllegalArgumentException("parse failed"));
+        ApplicationMessageHandler handler = new ApplicationMessageHandler(verifier);
 
         RestorePayloadValidationException exception = assertThrows(
                 RestorePayloadValidationException.class,
-                () -> handler.validate(sourceRecord(), context("application"))
+                () -> handler.validate(
+                        sourceRecord("{".getBytes(StandardCharsets.UTF_8)),
+                        context("application")
+                )
         );
 
         assertNotNull(exception.getCause());
@@ -121,49 +130,57 @@ class MessageHandlersTest {
     }
 
     @Test
-    void applicationHandlerSkipsS3WhenNoKnownBinaryReferencesExist() {
+    void applicationHandlerSkipsS3WhenNoKnownBinaryReferencesExist() throws Exception {
         S3FileExistenceVerifier verifier = mock(S3FileExistenceVerifier.class);
-        ApplicationMessageHandler handler =
-                new TestApplicationMessageHandler(verifier, applicationMessageWithoutReferences());
+        ApplicationMessageHandler handler = new ApplicationMessageHandler(verifier);
 
-        handler.validate(sourceRecord(), context("application"));
-
-        verifyNoInteractions(verifier);
-    }
-
-    @Test
-    void abuseHandlerSkipsBlankObjectKeys() {
-        S3FileExistenceVerifier verifier = mock(S3FileExistenceVerifier.class);
-        AbuseMessageHandler handler =
-                new TestAbuseMessageHandler(verifier, abuseMessageWithOneReference());
-
-        handler.validate(sourceRecord(), context("abuse"));
-
-        verify(verifier, times(1)).verifyExists(any(), eq("abuse"), any());
-        verifyNoMoreInteractions(verifier);
-    }
-
-    @Test
-    void abuseHandlerRejectsMissingMessageIdBeforeS3Validation() {
-        S3FileExistenceVerifier verifier = mock(S3FileExistenceVerifier.class);
-        AbuseMessageHandler handler =
-                new TestAbuseMessageHandler(verifier, abuseMessage(" "));
-
-        assertThrows(
-                MessageTypeMismatchException.class,
-                () -> handler.validate(sourceRecord(), context("abuse"))
+        handler.validate(
+                sourceRecord(jsonBytes(applicationMessageWithoutReferences())),
+                context("application")
         );
 
         verifyNoInteractions(verifier);
     }
 
     @Test
-    void abuseHandlerSkipsS3WhenNoBinaryReferencesExist() {
+    void abuseHandlerSkipsBlankObjectKeys() throws Exception {
         S3FileExistenceVerifier verifier = mock(S3FileExistenceVerifier.class);
-        AbuseMessageHandler handler =
-                new TestAbuseMessageHandler(verifier, abuseMessageWithoutReferences());
+        AbuseMessageHandler handler = new AbuseMessageHandler(verifier);
 
-        handler.validate(sourceRecord(), context("abuse"));
+        handler.validate(
+                sourceRecord(jsonBytes(abuseMessageWithOneReference())),
+                context("abuse")
+        );
+
+        verify(verifier, times(1)).verifyExists(any(), eq("abuse"), any());
+        verifyNoMoreInteractions(verifier);
+    }
+
+    @Test
+    void abuseHandlerRejectsMissingMessageIdBeforeS3Validation() throws Exception {
+        S3FileExistenceVerifier verifier = mock(S3FileExistenceVerifier.class);
+        AbuseMessageHandler handler = new AbuseMessageHandler(verifier);
+
+        assertThrows(
+                MessageTypeMismatchException.class,
+                () -> handler.validate(
+                        sourceRecord(jsonBytes(abuseMessage(" "))),
+                        context("abuse")
+                )
+        );
+
+        verifyNoInteractions(verifier);
+    }
+
+    @Test
+    void abuseHandlerSkipsS3WhenNoBinaryReferencesExist() throws Exception {
+        S3FileExistenceVerifier verifier = mock(S3FileExistenceVerifier.class);
+        AbuseMessageHandler handler = new AbuseMessageHandler(verifier);
+
+        handler.validate(
+                sourceRecord(jsonBytes(abuseMessageWithoutReferences())),
+                context("abuse")
+        );
 
         verifyNoInteractions(verifier);
     }
@@ -171,30 +188,36 @@ class MessageHandlersTest {
     @Test
     void abuseHandlerWrapsParsingFailures() {
         S3FileExistenceVerifier verifier = mock(S3FileExistenceVerifier.class);
-        AbuseMessageHandler handler =
-                new TestAbuseMessageHandler(verifier, new IllegalArgumentException("parse failed"));
+        AbuseMessageHandler handler = new AbuseMessageHandler(verifier);
 
         RestorePayloadValidationException exception = assertThrows(
                 RestorePayloadValidationException.class,
-                () -> handler.validate(sourceRecord(), context("abuse"))
+                () -> handler.validate(
+                        sourceRecord("{".getBytes(StandardCharsets.UTF_8)),
+                        context("abuse")
+                )
         );
 
         assertNotNull(exception.getCause());
         verifyNoInteractions(verifier);
     }
 
-    private ConsumerRecord<String, byte[]> sourceRecord() {
+    private ConsumerRecord<String, byte[]> sourceRecord(byte[] payloadBytes) {
         return new ConsumerRecord<>(
                 "topic",
                 0,
                 1L,
                 "key",
-                "unused".getBytes(StandardCharsets.UTF_8)
+                payloadBytes
         );
     }
 
     private RestoreRecordValidationContext context(String restoreType) {
         return new RestoreRecordValidationContext(UUID.randomUUID(), restoreType, "topic", 0, 1L);
+    }
+
+    private byte[] jsonBytes(Object value) throws Exception {
+        return OBJECT_MAPPER.writeValueAsBytes(value);
     }
 
     private NotificationRestoreMessage notificationMessage(String entityType) {
@@ -297,93 +320,5 @@ class MessageHandlersTest {
         emptyAttachment.setObjectKey("   ");
         message.setAttachments(List.of(new AbuseRestoreMessage.UploadedFile(), emptyAttachment));
         return message;
-    }
-
-    private static final class TestNotificationMessageHandler extends NotificationMessageHandler {
-
-        private final NotificationRestoreMessage parsed;
-        private final RuntimeException failure;
-
-        private TestNotificationMessageHandler(NotificationRestoreMessage parsed) {
-            this.parsed = parsed;
-            this.failure = null;
-        }
-
-        private TestNotificationMessageHandler(RuntimeException failure) {
-            this.parsed = null;
-            this.failure = failure;
-        }
-
-        @Override
-        protected NotificationRestoreMessage parse(byte[] payloadBytes) {
-            if (failure != null) {
-                throw parsingFailure(failure);
-            }
-            return parsed;
-        }
-    }
-
-    private static final class TestApplicationMessageHandler extends ApplicationMessageHandler {
-
-        private final ApplicationRestoreMessage parsed;
-        private final RuntimeException failure;
-
-        private TestApplicationMessageHandler(
-                S3FileExistenceVerifier verifier,
-                ApplicationRestoreMessage parsed
-        ) {
-            super(verifier);
-            this.parsed = parsed;
-            this.failure = null;
-        }
-
-        private TestApplicationMessageHandler(
-                S3FileExistenceVerifier verifier,
-                RuntimeException failure
-        ) {
-            super(verifier);
-            this.parsed = null;
-            this.failure = failure;
-        }
-
-        @Override
-        protected ApplicationRestoreMessage parse(byte[] payloadBytes) {
-            if (failure != null) {
-                throw parsingFailure(failure);
-            }
-            return parsed;
-        }
-    }
-
-    private static final class TestAbuseMessageHandler extends AbuseMessageHandler {
-
-        private final AbuseRestoreMessage parsed;
-        private final RuntimeException failure;
-
-        private TestAbuseMessageHandler(
-                S3FileExistenceVerifier verifier,
-                AbuseRestoreMessage parsed
-        ) {
-            super(verifier);
-            this.parsed = parsed;
-            this.failure = null;
-        }
-
-        private TestAbuseMessageHandler(
-                S3FileExistenceVerifier verifier,
-                RuntimeException failure
-        ) {
-            super(verifier);
-            this.parsed = null;
-            this.failure = failure;
-        }
-
-        @Override
-        protected AbuseRestoreMessage parse(byte[] payloadBytes) {
-            if (failure != null) {
-                throw parsingFailure(failure);
-            }
-            return parsed;
-        }
     }
 }
